@@ -51,7 +51,9 @@ cp .env.example .env       # set SITE_ADDRESS (and APP_PORT if 8787 is taken)
 
 Other commands: `./deploy.sh production status|logs|stop|restart`. Each run updates the checkout
 (fast-forward only), dependencies and the build. Pushes to `main` can deploy automatically through GitHub
-Actions; see `.github/workflows/ci-cd.yml`.
+Actions; see `.github/workflows/ci-cd.yml`. The CI job sends `deploy.sh` over SSH, so the folder in
+`DEPLOY_PATH` is created and cloned if it does not exist yet (with the optional `DEPLOY_SITE_ADDRESS` secret
+it also writes `.env` on the first deploy).
 
 ## Development
 

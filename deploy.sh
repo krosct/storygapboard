@@ -4,6 +4,8 @@
 #   ./deploy.sh local                         build and run on http://localhost:8080 (Ctrl+C stops)
 #   ./deploy.sh production [up|status|logs|stop|restart]
 #                                             deploy on a server that may already host other apps
+#   deploy.sh bootstrap PATH REPO_URL [SITE]  (CI, script sent over SSH) create/clone PATH if
+#                                             needed, then run "production" from there
 #
 # It only creates/updates files that belong to this app: the project folder
 # (.venv, frontend build, data/, .env, storygapboard.caddy) and its own user
@@ -23,7 +25,7 @@ warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
-	sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+	if [ -f "$0" ]; then sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; fi
 	exit "${1:-0}"
 }
 
@@ -245,8 +247,27 @@ update_code() {
 	SGB_SKIP_PULL=1 exec "$0" "$@"
 }
 
+# First deploy from CI: build .env from .env.example with the given site.
+create_env_file() { # site
+	local site="$1" url key line
+	url="$site"
+	[[ "$url" == *://* ]] || url="https://$url"
+	say "Creating .env from .env.example (SITE_ADDRESS=$site)"
+	while IFS= read -r line || [ -n "$line" ]; do
+		key="${line%%=*}"
+		case "$key" in
+			SITE_ADDRESS) printf 'SITE_ADDRESS=%s\n' "$site" ;;
+			PUBLIC_URL) printf 'PUBLIC_URL=%s\n' "$url" ;;
+			*) printf '%s\n' "$line" ;;
+		esac
+	done < "$ROOT/.env.example" > "$ROOT/.env"
+}
+
 prepare_production_env() {
-	[ -f "$ROOT/.env" ] || die "Missing .env. Run: cp .env.example .env  and set SITE_ADDRESS to your domain."
+	if [ ! -f "$ROOT/.env" ] && [ -n "${SGB_SITE_ADDRESS:-}" ]; then
+		create_env_file "$SGB_SITE_ADDRESS"
+	fi
+	[ -f "$ROOT/.env" ] || die "Missing .env in $ROOT. Either set the DEPLOY_SITE_ADDRESS secret (CI creates it), or run there: cp .env.example .env  and set SITE_ADDRESS to your domain."
 	local site
 	site="$(env_value SITE_ADDRESS)"
 	[ -n "$site" ] && [ "$site" != "example.com" ] || die "Set SITE_ADDRESS in .env to the domain of this app."
@@ -425,11 +446,54 @@ production() { # action
 	say "Deployed: $site  (app on 127.0.0.1:$port)"
 }
 
+# --------------------------------------------------------------------------
+# Bootstrap (CI): this script arrives over SSH, so the project folder may not
+# exist yet. Resolve the path, clone the repository when needed, then run the
+# project's own deploy.sh. Never overwrites a folder that is not our checkout.
+# --------------------------------------------------------------------------
+
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+
+bootstrap() { # path repo_url [site]
+	local path repo site
+	path="$(trim "${1:-}")"
+	repo="$(trim "${2:-}")"
+	site="$(trim "${3:-}")"
+	[ -n "$path" ] || die "The project path (DEPLOY_PATH) is empty."
+	case "$path" in
+		"~") path="$HOME" ;;
+		"~/"*) path="$HOME/${path#"~/"}" ;;
+		/*) ;;
+		*) path="$HOME/$path" ;;  # relative paths are relative to the deploy user's home
+	esac
+	path="${path%/}"
+	command -v git >/dev/null 2>&1 || die "git is not installed on the server: sudo apt install git"
+	if [ -f "$path/deploy.sh" ] && git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		say "Using the existing checkout in $path"
+	elif [ -e "$path" ] && [ ! -d "$path" ]; then
+		die "$path exists and is not a folder."
+	elif [ -d "$path" ] && [ -n "$(ls -A "$path" 2>/dev/null)" ]; then
+		die "$path is not empty and is not a StoryGapBoard checkout; refusing to touch it. Use an empty or new folder."
+	else
+		[ -n "$repo" ] || die "No repository URL to clone from."
+		mkdir -p "$path" 2>/dev/null && [ -w "$path" ] || die "User $(id -un) cannot create or write $path. Ask an admin once:
+    sudo mkdir -p $path && sudo chown $(id -un): $path"
+		say "Cloning $repo into $path"
+		git clone --quiet "$repo" "$path" || die "git clone failed."
+	fi
+	[ -x "$path/deploy.sh" ] || chmod +x "$path/deploy.sh"
+	cd "$path"
+	export SGB_SITE_ADDRESS="$site"
+	# stdin is this script itself (bash -s): never let the deploy read from it.
+	exec ./deploy.sh production up < /dev/null
+}
+
 main() {
 	ROOT="$(cd "$(dirname "$0")" && pwd)"
 	case "${1:-}" in
 		local) run_local ;;
 		production) production "${2:-up}" ;;
+		bootstrap) bootstrap "${2:-}" "${3:-}" "${4:-}" ;;
 		-h|--help|help|"") usage 0 ;;
 		*) usage 1 ;;
 	esac

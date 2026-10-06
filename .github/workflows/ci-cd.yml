@@ -99,8 +99,9 @@ jobs:
     # Enable with the REPOSITORY variable DEPLOY_ENABLED=true (job conditions
     # cannot see environment variables) and these secrets in the "vars"
     # environment: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS,
-    # DEPLOY_PATH (optional DEPLOY_PORT). Runs on pushes to main and on manual
-    # "Run workflow" from main.
+    # DEPLOY_PATH (created and cloned if missing), optional DEPLOY_PORT and
+    # DEPLOY_SITE_ADDRESS (creates .env on the first deploy). Runs on pushes to
+    # main and on manual "Run workflow" from main.
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
@@ -110,7 +111,8 @@ jobs:
       group: deploy-production
       cancel-in-progress: false
     steps:
-      - name: Run ./deploy.sh production on the server
+      - uses: actions/checkout@v7
+      - name: Run deploy.sh on the server
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER_NAME: ${{ secrets.DEPLOY_USER }}
@@ -118,10 +120,17 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           APP_PATH: ${{ secrets.DEPLOY_PATH }}
           PORT: ${{ secrets.DEPLOY_PORT }}
+          SITE: ${{ secrets.DEPLOY_SITE_ADDRESS }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          ssh -i ~/.ssh/deploy_key -p "${PORT:-22}" -o StrictHostKeyChecking=yes -o BatchMode=yes \
-            "$USER_NAME@$HOST" "cd \"$APP_PATH\" && ./deploy.sh production"
+          # deploy.sh travels over SSH, so the folder on the server may not exist
+          # yet: "bootstrap" creates/clones it, then runs ./deploy.sh production.
+          remote="bash -s -- bootstrap $(printf '%q' "$APP_PATH") $(printf '%q' "$REPO_URL") $(printf '%q' "$SITE")"
+          ssh -i ~/.ssh/deploy_key -p "$(printf '%s' "${PORT:-22}" | tr -d '[:space:]')" \
+            -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$(printf '%s' "$USER_NAME" | tr -d '[:space:]')@$(printf '%s' "$HOST" | tr -d '[:space:]')" \
+            "$remote" < deploy.sh

@@ -121,7 +121,23 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
-      - name: Run deploy.sh on the server
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # The server needs neither git nor Node: it receives a ready release
+      # package of exactly this commit (backend code + built frontend).
+      - name: Build the release package
+        run: |
+          (cd frontend && npm ci --no-audit --no-fund && npm run build)
+          mkdir -p pkg/frontend
+          git archive "$GITHUB_SHA" deploy.sh .env.example backend/requirements.txt backend/app | tar -x -C pkg
+          cp -r frontend/dist pkg/frontend/dist
+          printf '%s\n' "$GITHUB_SHA" > pkg/RELEASE
+          tar -czf release.tar.gz -C pkg .
+          sha256sum release.tar.gz
+      - name: Deploy on the server
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER_NAME: ${{ secrets.DEPLOY_USER }}
@@ -129,7 +145,6 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           APP_PATH: ${{ secrets.DEPLOY_PATH }}
           PORT: ${{ secrets.DEPLOY_PORT }}
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
           # Keep this list in sync with ENV_KEYS in deploy.sh.
           ENV_KEYS: SITE_ADDRESS PUBLIC_URL APP_PORT CADDYFILE LOG_HASH_SALT RATE_API_PER_MINUTE RATE_GENERATE_PER_MINUTE RATE_GENERATE_PER_DAY MAX_JOBS_PER_CLIENT MAX_CONCURRENT_JOBS AUTH_FAILURES_BEFORE_LOCK AUTH_FAILURE_WINDOW_S AUTH_LOCK_S JOB_TTL_S MAX_STORED_JOBS
           ENV_SITE_ADDRESS: ${{ secrets.DEPLOY_SITE_ADDRESS || vars.DEPLOY_SITE_ADDRESS }}
@@ -152,6 +167,8 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          target="$(printf '%s' "$USER_NAME" | tr -d '[:space:]')@$(printf '%s' "$HOST" | tr -d '[:space:]')"
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$(printf '%s' "${PORT:-22}" | tr -d '[:space:]')" -o StrictHostKeyChecking=yes -o BatchMode=yes)
           # App settings as "KEY=value" lines (deploy.sh validates every one).
           settings=""
           for key in $ENV_KEYS; do
@@ -164,12 +181,12 @@ jobs:
             fi
             settings+="$key=$value"$'\n'
           done
-          # deploy.sh travels over SSH (the folder on the server may not exist
-          # yet). Settings go inside that stream, never as command arguments,
-          # and the server deploys exactly the commit tested by this run.
-          remote="bash -s -- bootstrap $(printf '%q' "$APP_PATH") $(printf '%q' "$REPO_URL") $(printf '%q' "$GITHUB_SHA")"
-          { printf 'SGB_ENV=%q\n' "$settings"; cat deploy.sh; } | ssh -i ~/.ssh/deploy_key \
-            -p "$(printf '%s' "${PORT:-22}" | tr -d '[:space:]')" \
-            -o StrictHostKeyChecking=yes -o BatchMode=yes \
-            "$(printf '%s' "$USER_NAME" | tr -d '[:space:]')@$(printf '%s' "$HOST" | tr -d '[:space:]')" \
-            "$remote"
+          # 1) upload the package (private folder of the deploy user)
+          pkg="~/.cache/storygapboard/release-$GITHUB_SHA.tar.gz"
+          ssh "${ssh_opts[@]}" "$target" \
+            'umask 077 && mkdir -p "$HOME/.cache/storygapboard" && cat > "$HOME/.cache/storygapboard/release-'"$GITHUB_SHA"'.tar.gz"' \
+            < release.tar.gz
+          # 2) run deploy.sh from the stream: settings go inside it, never as
+          #    command arguments (other users on the server can read those).
+          remote="bash -s -- bootstrap $(printf '%q' "$APP_PATH") $GITHUB_SHA $(printf '%q' "$pkg") $(sha256sum release.tar.gz | cut -d' ' -f1)"
+          { printf 'SGB_ENV=%q\n' "$settings"; cat deploy.sh; } | ssh "${ssh_opts[@]}" "$target" "$remote"

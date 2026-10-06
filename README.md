@@ -53,7 +53,7 @@ Other commands: `./deploy.sh production status|logs|stop|restart`. Each run upda
 (fast-forward only), dependencies and the build. Pushes to `main` can deploy automatically through GitHub
 Actions; see `.github/workflows/ci-cd.yml`. The CI job sends `deploy.sh` over SSH, so the folder in
 `DEPLOY_PATH` is created and cloned if it does not exist yet (with the optional `DEPLOY_SITE_ADDRESS` secret
-it also writes `.env` on the first deploy).
+it also writes `.env` on the first deploy and keeps its `SITE_ADDRESS` in sync with the secret).
 
 ## Development
 

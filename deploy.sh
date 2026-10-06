@@ -247,39 +247,67 @@ update_code() {
 	SGB_SKIP_PULL=1 exec "$0" "$@"
 }
 
-# First deploy from CI: build .env from .env.example with the given site.
-create_env_file() { # site
-	local site="$1" url key line
-	url="$site"
-	[[ "$url" == *://* ]] || url="https://$url"
-	say "Creating .env from .env.example (SITE_ADDRESS=$site)"
+# Replace KEY's line in .env (or append it), keeping every other line as is.
+set_env_value() { # key value
+	local key="$1" value="$2" line found=0 tmp="$ROOT/.env.tmp"
 	while IFS= read -r line || [ -n "$line" ]; do
-		key="${line%%=*}"
-		case "$key" in
-			SITE_ADDRESS) printf 'SITE_ADDRESS=%s\n' "$site" ;;
-			PUBLIC_URL) printf 'PUBLIC_URL=%s\n' "$url" ;;
-			*) printf '%s\n' "$line" ;;
-		esac
-	done < "$ROOT/.env.example" > "$ROOT/.env"
+		if [ "${line%%=*}" = "$key" ] && [ "$found" = 0 ]; then
+			printf '%s=%s\n' "$key" "$value"
+			found=1
+		elif [ "${line%%=*}" != "$key" ]; then
+			printf '%s\n' "$line"
+		fi
+	done < "$ROOT/.env" > "$tmp"
+	[ "$found" = 1 ] || printf '%s=%s\n' "$key" "$value" >> "$tmp"
+	chmod 600 "$tmp"
+	mv "$tmp" "$ROOT/.env"
+}
+
+site_url() { # site -> https URL (unless the site already has a scheme)
+	if [[ "$1" == *://* ]]; then printf '%s' "$1"; else printf 'https://%s' "$1"; fi
+}
+
+# The site address ends up inside the Caddy config: allow address characters
+# only (a "{", space or newline could inject Caddy directives).
+valid_site() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]; }
+
+# The DEPLOY_SITE_ADDRESS secret (passed by CI as SGB_SITE_ADDRESS) is the
+# source of truth when set: it creates .env on the first deploy and updates
+# SITE_ADDRESS (and a PUBLIC_URL derived from it) whenever it changes.
+sync_site_from_ci() {
+	local site="${SGB_SITE_ADDRESS:-}" old old_url
+	[ -n "$site" ] || return 0
+	site="${site%/}"
+	valid_site "$site" || die "DEPLOY_SITE_ADDRESS has invalid characters; use just the domain, e.g. app.example.com"
+	if [ ! -f "$ROOT/.env" ]; then
+		say "Creating .env from .env.example (SITE_ADDRESS=$site)"
+		cp "$ROOT/.env.example" "$ROOT/.env"
+		chmod 600 "$ROOT/.env"
+		set_env_value SITE_ADDRESS "$site"
+		set_env_value PUBLIC_URL "$(site_url "$site")"
+		return 0
+	fi
+	old="$(env_value SITE_ADDRESS)"
+	[ "$old" = "$site" ] && return 0
+	say "DEPLOY_SITE_ADDRESS changed: updating .env (SITE_ADDRESS ${old:-<empty>} -> $site)"
+	old_url="$(env_value PUBLIC_URL)"
+	set_env_value SITE_ADDRESS "$site"
+	# PUBLIC_URL follows the site unless it was customised by hand.
+	if [ -z "$old_url" ] || [ -z "$old" ] || [ "$old_url" = "$(site_url "$old")" ]; then
+		set_env_value PUBLIC_URL "$(site_url "$site")"
+	fi
 }
 
 prepare_production_env() {
-	if [ ! -f "$ROOT/.env" ] && [ -n "${SGB_SITE_ADDRESS:-}" ]; then
-		create_env_file "$SGB_SITE_ADDRESS"
-	fi
+	sync_site_from_ci
 	[ -f "$ROOT/.env" ] || die "Missing .env in $ROOT. Either set the DEPLOY_SITE_ADDRESS secret (CI creates it), or run there: cp .env.example .env  and set SITE_ADDRESS to your domain."
 	local site
 	site="$(env_value SITE_ADDRESS)"
 	[ -n "$site" ] && [ "$site" != "example.com" ] || die "Set SITE_ADDRESS in .env to the domain of this app."
+	valid_site "$site" || die "SITE_ADDRESS in .env has invalid characters; use just the domain, e.g. app.example.com"
 	if [ -z "$(env_value LOG_HASH_SALT)" ]; then
 		say "Generating LOG_HASH_SALT in .env"
-		local salt
-		salt="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
-		if grep -qE '^LOG_HASH_SALT=' "$ROOT/.env"; then
-			sed -i.bak "s/^LOG_HASH_SALT=.*/LOG_HASH_SALT=$salt/" "$ROOT/.env" && rm -f "$ROOT/.env.bak"
-		else
-			printf '\nLOG_HASH_SALT=%s\n' "$salt" >> "$ROOT/.env"
-		fi
+		set_env_value LOG_HASH_SALT "$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 	fi
 	chmod 600 "$ROOT/.env"
 }

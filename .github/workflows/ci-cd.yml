@@ -100,7 +100,8 @@ jobs:
     # cannot see environment variables) and these secrets in the "vars"
     # environment: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS,
     # DEPLOY_PATH (created and cloned if missing), optional DEPLOY_PORT and
-    # DEPLOY_SITE_ADDRESS (creates .env on the first deploy). Runs on pushes to
+    # DEPLOY_SITE_ADDRESS (source of truth for SITE_ADDRESS: creates .env and
+    # updates it whenever the secret changes). Runs on pushes to
     # main and on manual "Run workflow" from main.
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')

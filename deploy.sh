@@ -1,36 +1,56 @@
 #!/usr/bin/env bash
 # StoryGapBoard: the single deploy script. Runs natively (no Docker).
 #
-#   ./deploy.sh local                         build and run on http://localhost:8080 (Ctrl+C stops)
-#   ./deploy.sh production [up|status|logs|stop|restart]
-#                                             deploy on a server that may already host other apps
-#   deploy.sh bootstrap PATH REPO_URL [SHA]   (CI, script sent over SSH) create/clone PATH if
-#                                             needed, then deploy exactly commit SHA from there
+#   ./deploy.sh local       build and run on http://localhost:8080 (Ctrl+C stops)
 #
-# It only creates/updates files that belong to this app: the project folder
-# (.venv, frontend build, data/, .env, storygapboard.caddy) and its own user
-# service (~/.config/systemd/user/storygapboard.service). It never installs
-# system packages, never edits the main Caddyfile and never touches other apps:
-# Caddy is reloaded only when this app's site block changes (and keeps its old
-# config if the reload fails).
+# Production deploys run from GitHub Actions (.github/workflows/ci-cd.yml): CI
+# builds a release package of the tested commit and sends it, with this script,
+# over SSH. On the server nothing has to be prepared by hand:
+#   deploy.sh bootstrap PATH SHA PACKAGE SHA256   (CI, script on stdin)
+#   deploy.sh release-up STATE SHA                (internal, run from the release)
+#   deploy.sh supervise STATE                     (internal, every minute: self-healing)
+#   PATH/current/deploy.sh production status|logs|restart|stop   (optional helpers)
+#
+# On the server it only creates/updates what belongs to this app: the project
+# folder (releases/, current, .venv, tools/, data/, .env, storygapboard.caddy),
+# its own user service/timer or crontab lines, and - only when the deploy user
+# can sudo without a password - one "import" line in the main Caddyfile (backed
+# up, validated, rolled back on failure). It never touches other apps.
 set -euo pipefail
 
 SERVICE=storygapboard
 LOCAL_PORT="${LOCAL_PORT:-8080}"
 MIN_PYTHON="3.10"
+SERVER_PYTHON="3.12"           # managed by uv on the server, independent of the system
+UV_VERSION="0.12.23"
+UV_SHA256_x86_64="9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
+UV_SHA256_aarch64="6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f"
+KEEP_RELEASES=3
 HEALTH_TIMEOUT_S=60
+CRON_TAG="# storygapboard"
 
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
-	if [ -f "$0" ]; then sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; fi
+	if [ -f "$0" ]; then sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; fi
 	exit "${1:-0}"
 }
 
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+
+file_hash() {
+	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+	else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+port_in_use() { # port (bash only, no Python needed)
+	(exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
 # --------------------------------------------------------------------------
-# .env (parsed, never sourced: it is data, not code)
+# .env (parsed, never sourced: it is data, not code). ROOT = folder holding it.
 # --------------------------------------------------------------------------
 
 strip_quotes() { local v="$1"; v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"; printf '%s' "$v"; }
@@ -53,91 +73,20 @@ export_env_file() {
 	done < "$ROOT/.env"
 }
 
-# --------------------------------------------------------------------------
-# Dependencies: verified, never installed system-wide
-# --------------------------------------------------------------------------
-
-find_python() {
-	local candidate
-	for candidate in "${PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3; do
-		[ -n "$candidate" ] || continue
-		command -v "$candidate" >/dev/null 2>&1 || continue
-		if "$candidate" -c "import sys; sys.exit(sys.version_info < (${MIN_PYTHON/./, }))" 2>/dev/null; then
-			PYTHON_BIN="$(command -v "$candidate")"
-			return 0
+# Replace KEY's line in .env (or append it), keeping every other line as is.
+set_env_value() { # key value
+	local key="$1" value="$2" line found=0 tmp="$ROOT/.env.tmp"
+	while IFS= read -r line || [ -n "$line" ]; do
+		if [ "${line%%=*}" = "$key" ] && [ "$found" = 0 ]; then
+			printf '%s=%s\n' "$key" "$value"
+			found=1
+		elif [ "${line%%=*}" != "$key" ]; then
+			printf '%s\n' "$line"
 		fi
-	done
-	return 1
-}
-
-node_ok() {
-	command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || return 1
-	node -e 'const [a,b]=process.versions.node.split(".").map(Number);
-		process.exit((a===20&&b>=19)||(a===22&&b>=12)||a>22?0:1)'
-}
-
-check_dependencies() { # mode
-	local missing=()
-	find_python || missing+=("Python >= $MIN_PYTHON with venv: sudo apt install python3 python3-venv")
-	if [ -n "${PYTHON_BIN:-}" ] && ! "$PYTHON_BIN" -c "import venv, ensurepip" 2>/dev/null; then
-		missing+=("Python venv module: sudo apt install python3-venv (or python3.X-venv)")
-	fi
-	node_ok || missing+=("Node.js 20.19+ or 22.12+ with npm: https://nodejs.org (or your distro's nodejs)")
-	if [ "$1" = production ]; then
-		command -v git >/dev/null 2>&1 || missing+=("git: sudo apt install git")
-		command -v systemctl >/dev/null 2>&1 || missing+=("systemd (systemctl)")
-	fi
-	if [ ${#missing[@]} -gt 0 ]; then
-		printf '\033[1;31mMissing dependencies\033[0m (install them, then run again):\n' >&2
-		printf '  - %s\n' "${missing[@]}" >&2
-		exit 1
-	fi
-	say "Dependencies OK: $("$PYTHON_BIN" --version), Node $(node --version)"
-}
-
-# --------------------------------------------------------------------------
-# Build (identical for local and production)
-# --------------------------------------------------------------------------
-
-file_hash() { "$PYTHON_BIN" -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$1"; }
-
-setup_backend() {
-	if [ ! -x "$ROOT/.venv/bin/python" ]; then
-		say "Creating the Python virtualenv (.venv)"
-		"$PYTHON_BIN" -m venv "$ROOT/.venv"
-	fi
-	local want have
-	want="$(file_hash "$ROOT/backend/requirements.txt")"
-	have="$(cat "$ROOT/.venv/.requirements.sha256" 2>/dev/null || true)"
-	if [ "$want" != "$have" ]; then
-		say "Installing backend dependencies"
-		"$ROOT/.venv/bin/python" -m pip install --quiet --upgrade pip
-		"$ROOT/.venv/bin/python" -m pip install --quiet -r "$ROOT/backend/requirements.txt"
-		printf '%s\n' "$want" > "$ROOT/.venv/.requirements.sha256"
-	fi
-}
-
-build_frontend() {
-	local fe="$ROOT/frontend" want have
-	want="$(file_hash "$fe/package-lock.json")"
-	have="$(cat "$fe/node_modules/.lock.sha256" 2>/dev/null || true)"
-	if [ "$want" != "$have" ]; then
-		say "Installing frontend dependencies"
-		(cd "$fe" && npm ci --no-audit --no-fund --loglevel=error)
-		printf '%s\n' "$want" > "$fe/node_modules/.lock.sha256"
-	fi
-	say "Building the frontend"
-	(cd "$fe" && npm run --silent typecheck && npx vite build --logLevel warn --outDir dist.new --emptyOutDir)
-	# Swap in one step so a running app never serves a half-written build.
-	rm -rf "$fe/dist.old"
-	if [ -d "$fe/dist" ]; then mv "$fe/dist" "$fe/dist.old"; fi
-	mv "$fe/dist.new" "$fe/dist"
-	rm -rf "$fe/dist.old"
-}
-
-prepare_data_dir() {
-	mkdir -p "$ROOT/data"
-	chmod 700 "$ROOT/data"
+	done < "$ROOT/.env" > "$tmp"
+	[ "$found" = 1 ] || printf '%s=%s\n' "$key" "$value" >> "$tmp"
+	chmod 600 "$tmp"
+	mv "$tmp" "$ROOT/.env"
 }
 
 # The same uvicorn command for local and production (only host/port differ).
@@ -147,7 +96,7 @@ uvicorn_args() { # host port
 		--no-server-header --no-access-log --timeout-keep-alive 5 --limit-concurrency 200
 }
 
-# This app's Caddy site block (also used locally when Caddy is installed).
+# This app's Caddy site block (production and, when Caddy is installed, local).
 site_block() { # address upstream_port
 	cat <<EOF
 # Generated by deploy.sh for StoryGapBoard. Do not edit: changes are overwritten.
@@ -185,19 +134,83 @@ assert 'layouts' in json.load(urllib.request.urlopen(base + '/api/meta', timeout
 	done
 }
 
-port_in_use() { # port
-	"$PYTHON_BIN" -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1', int(sys.argv[1])))==0 else 1)" "$1"
+# ==========================================================================
+# Local: build and run in the foreground (developer machine)
+# ==========================================================================
+
+find_python() {
+	local candidate
+	for candidate in "${PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3; do
+		[ -n "$candidate" ] || continue
+		command -v "$candidate" >/dev/null 2>&1 || continue
+		if "$candidate" -c "import sys; sys.exit(sys.version_info < (${MIN_PYTHON/./, }))" 2>/dev/null; then
+			PYTHON_BIN="$(command -v "$candidate")"
+			return 0
+		fi
+	done
+	return 1
 }
 
-# --------------------------------------------------------------------------
-# Local: same build and same server command, in the foreground
-# --------------------------------------------------------------------------
+node_ok() {
+	command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || return 1
+	node -e 'const [a,b]=process.versions.node.split(".").map(Number);
+		process.exit((a===20&&b>=19)||(a===22&&b>=12)||a>22?0:1)'
+}
+
+check_local_dependencies() {
+	local missing=()
+	find_python || missing+=("Python >= $MIN_PYTHON with venv")
+	if [ -n "${PYTHON_BIN:-}" ] && ! "$PYTHON_BIN" -c "import venv, ensurepip" 2>/dev/null; then
+		missing+=("Python venv module (python3-venv)")
+	fi
+	node_ok || missing+=("Node.js 20.19+ or 22.12+ with npm")
+	if [ ${#missing[@]} -gt 0 ]; then
+		printf '\033[1;31mMissing dependencies\033[0m (install them, then run again):\n' >&2
+		printf '  - %s\n' "${missing[@]}" >&2
+		exit 1
+	fi
+	say "Dependencies OK: $("$PYTHON_BIN" --version), Node $(node --version)"
+}
+
+setup_local_backend() {
+	if [ ! -x "$ROOT/.venv/bin/python" ]; then
+		say "Creating the Python virtualenv (.venv)"
+		"$PYTHON_BIN" -m venv "$ROOT/.venv"
+	fi
+	local want have
+	want="$(file_hash "$ROOT/backend/requirements.txt")"
+	have="$(cat "$ROOT/.venv/.requirements.sha256" 2>/dev/null || true)"
+	if [ "$want" != "$have" ]; then
+		say "Installing backend dependencies"
+		"$ROOT/.venv/bin/python" -m pip install --quiet --upgrade pip
+		"$ROOT/.venv/bin/python" -m pip install --quiet -r "$ROOT/backend/requirements.txt"
+		printf '%s\n' "$want" > "$ROOT/.venv/.requirements.sha256"
+	fi
+}
+
+build_frontend() {
+	local fe="$ROOT/frontend" want have
+	want="$(file_hash "$fe/package-lock.json")"
+	have="$(cat "$fe/node_modules/.lock.sha256" 2>/dev/null || true)"
+	if [ "$want" != "$have" ]; then
+		say "Installing frontend dependencies"
+		(cd "$fe" && npm ci --no-audit --no-fund --loglevel=error)
+		printf '%s\n' "$want" > "$fe/node_modules/.lock.sha256"
+	fi
+	say "Building the frontend"
+	(cd "$fe" && npm run --silent typecheck && npx vite build --logLevel warn --outDir dist.new --emptyOutDir)
+	# Swap in one step so a running app never serves a half-written build.
+	rm -rf "$fe/dist.old"
+	if [ -d "$fe/dist" ]; then mv "$fe/dist" "$fe/dist.old"; fi
+	mv "$fe/dist.new" "$fe/dist"
+	rm -rf "$fe/dist.old"
+}
 
 run_local() {
-	check_dependencies local
-	setup_backend
+	check_local_dependencies
+	setup_local_backend
 	build_frontend
-	prepare_data_dir
+	mkdir -p "$ROOT/data" && chmod 700 "$ROOT/data"
 	export_env_file
 	export DATA_DIR="$ROOT/data" FRONTEND_DIST="$ROOT/frontend/dist" PYTHONUNBUFFERED=1
 	local app_port="$LOCAL_PORT"
@@ -226,9 +239,15 @@ run_local() {
 	wait -n "${PIDS[@]}" || true
 }
 
-# --------------------------------------------------------------------------
-# Production: user-level systemd service + this app's Caddy site block
-# --------------------------------------------------------------------------
+# ==========================================================================
+# Server. Layout of the project folder (ROOT, a.k.a. STATE):
+#   releases/<sha>/   one folder per deployed commit (code + built frontend)
+#   current           symlink to the running release
+#   .env  data/  .venv/  tools/ (uv + Python)  .run/ (pids, logs, state)
+#   storygapboard.caddy   this app's Caddy site block
+# ==========================================================================
+
+can_sudo() { command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; }
 
 systemctl_user() {
 	# SSH sessions (e.g. GitHub Actions) may lack the user bus variables.
@@ -237,45 +256,67 @@ systemctl_user() {
 	systemctl --user "$@"
 }
 
-# Update the checkout, then re-run the (possibly updated) script. From CI
-# (SGB_DEPLOY_SHA) it moves to exactly the commit tested by that run, even if
-# the branch already has newer, untested commits; by hand it fast-forwards to
-# the upstream branch. Local changes on the server are never discarded.
-update_code() {
-	[ "${SGB_SKIP_PULL:-}" = 1 ] && return 0
-	git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-	git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 || return 0
-	git -C "$ROOT" fetch --quiet
-	local sha="${SGB_DEPLOY_SHA:-}"
-	if [ -n "$sha" ]; then
-		[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit id from CI: $sha"
-		git -C "$ROOT" merge-base --is-ancestor "$sha" '@{u}' 2>/dev/null \
-			|| die "Commit $sha is not on the deployed branch; refusing to deploy it."
-		say "Moving the code to the tested commit $(git -C "$ROOT" rev-parse --short "$sha")"
-		# --keep moves the branch (forwards or back) and aborts instead of losing local changes.
-		git -C "$ROOT" reset --quiet --keep "$sha" || die "Local changes on the server block the update; fix the checkout first."
-	else
-		say "Updating the code (fast-forward only)"
-		git -C "$ROOT" merge --ff-only --quiet '@{u}' || die "Local changes block a fast-forward update; fix the checkout first."
-	fi
-	SGB_SKIP_PULL=1 exec "$0" "$@"
+download() { # url destination
+	if command -v curl >/dev/null 2>&1; then curl -fsSL --retry 3 -o "$2" "$1"
+	elif command -v wget >/dev/null 2>&1; then wget -q -O "$2" "$1"
+	elif command -v python3 >/dev/null 2>&1; then python3 -c "import sys,urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" "$1" "$2"
+	else return 1; fi
 }
 
-# Replace KEY's line in .env (or append it), keeping every other line as is.
-set_env_value() { # key value
-	local key="$1" value="$2" line found=0 tmp="$ROOT/.env.tmp"
-	while IFS= read -r line || [ -n "$line" ]; do
-		if [ "${line%%=*}" = "$key" ] && [ "$found" = 0 ]; then
-			printf '%s=%s\n' "$key" "$value"
-			found=1
-		elif [ "${line%%=*}" != "$key" ]; then
-			printf '%s\n' "$line"
-		fi
-	done < "$ROOT/.env" > "$tmp"
-	[ "$found" = 1 ] || printf '%s=%s\n' "$key" "$value" >> "$tmp"
-	chmod 600 "$tmp"
-	mv "$tmp" "$ROOT/.env"
+# Only basic tools every Linux server has; everything else the script brings itself.
+check_server_basics() {
+	local missing=() tool
+	for tool in tar gzip mkdir ln mv; do
+		command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+	done
+	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || missing+=("sha256sum")
+	command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 \
+		|| missing+=("curl, wget or python3 (to download the app's own Python)")
+	if [ ${#missing[@]} -gt 0 ]; then
+		die "This server lacks basic tools: ${missing[*]}"
+	fi
 }
+
+# --- Python: the app's own interpreter via uv (pinned + checksum verified) ---
+
+ensure_python() {
+	local arch expected uv_dir="$ROOT/tools/uv-$UV_VERSION" tmp
+	case "$(uname -m)" in
+		x86_64|amd64) arch=x86_64; expected="$UV_SHA256_x86_64" ;;
+		aarch64|arm64) arch=aarch64; expected="$UV_SHA256_aarch64" ;;
+		*) die "Unsupported CPU architecture: $(uname -m)" ;;
+	esac
+	if [ ! -x "$uv_dir/uv" ]; then
+		say "Installing uv $UV_VERSION (the app's own Python manager) into tools/"
+		tmp="$(mktemp -d)"
+		download "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$arch-unknown-linux-gnu.tar.gz" "$tmp/uv.tgz" \
+			|| die "Could not download uv (no internet access from the server?)."
+		[ "$(file_hash "$tmp/uv.tgz")" = "$expected" ] || die "uv download failed its checksum; refusing to use it."
+		tar -xzf "$tmp/uv.tgz" -C "$tmp"
+		mkdir -p "$uv_dir"
+		mv "$tmp/uv-$arch-unknown-linux-gnu/uv" "$uv_dir/uv"
+		rm -rf "$tmp"
+	fi
+	UV="$uv_dir/uv"
+	export UV_PYTHON_INSTALL_DIR="$ROOT/tools/python" UV_CACHE_DIR="$ROOT/.cache/uv" \
+		UV_PYTHON_PREFERENCE=only-managed UV_NO_PROGRESS=1
+	if ! "$ROOT/.venv/bin/python" -c "import sys; sys.exit(sys.version_info[:2] != (${SERVER_PYTHON/./, }))" 2>/dev/null; then
+		say "Creating the virtualenv with Python $SERVER_PYTHON (downloaded by uv if needed)"
+		rm -rf "$ROOT/.venv"
+		"$UV" venv --quiet --python "$SERVER_PYTHON" "$ROOT/.venv" || die "Could not create the Python environment."
+	fi
+	local want have
+	want="$(file_hash "$CODE/backend/requirements.txt")"
+	have="$(cat "$ROOT/.venv/.requirements.sha256" 2>/dev/null || true)"
+	if [ "$want" != "$have" ]; then
+		say "Installing backend dependencies"
+		"$UV" pip install --quiet --python "$ROOT/.venv/bin/python" -r "$CODE/backend/requirements.txt" \
+			|| die "Could not install the backend dependencies."
+		printf '%s\n' "$want" > "$ROOT/.venv/.requirements.sha256"
+	fi
+}
+
+# --- Settings from GitHub (DEPLOY_<KEY> secrets/variables, sent as SGB_ENV) ---
 
 site_url() { # site -> https URL (unless the site already has a scheme)
 	if [[ "$1" == *://* ]]; then printf '%s' "$1"; else printf 'https://%s' "$1"; fi
@@ -314,13 +355,11 @@ valid_value() { # type value
 	esac
 }
 
-# CI settings (SGB_ENV: "KEY=value" lines from the DEPLOY_<KEY> secrets and
-# variables) are the source of truth: they create .env on the first deploy and
+# CI settings are the source of truth: they create .env on the first deploy and
 # overwrite a key whenever its value differs. Keys CI does not send are left as
 # they are. Everything is validated before .env is touched; values are never
 # printed (some are secret), only the names of the keys that changed.
 sync_env_from_ci() {
-	[ -n "${SGB_ENV:-}" ] || return 0
 	local line key value type keys=() values=() i changed=() old_site="" old_url="" new_site="" url_given=0
 	while IFS= read -r line || [ -n "$line" ]; do
 		line="$(trim "$line")"
@@ -333,10 +372,10 @@ sync_env_from_ci() {
 		keys+=("$key"); values+=("$value")
 		[ "$key" = SITE_ADDRESS ] && new_site="$value"
 		[ "$key" = PUBLIC_URL ] && url_given=1
-	done <<< "$SGB_ENV"
+	done <<< "${SGB_ENV:-}"
 	if [ ! -f "$ROOT/.env" ]; then
 		say "Creating .env from .env.example"
-		cp "$ROOT/.env.example" "$ROOT/.env"
+		cp "$CODE/.env.example" "$ROOT/.env"
 		chmod 600 "$ROOT/.env"
 	else
 		old_site="$(env_value SITE_ADDRESS)"
@@ -360,31 +399,62 @@ sync_env_from_ci() {
 	fi
 }
 
-prepare_production_env() {
+prepare_env() {
 	sync_env_from_ci
-	[ -f "$ROOT/.env" ] || die "Missing .env in $ROOT. Either set DEPLOY_SITE_ADDRESS in GitHub (CI creates .env), or run there: cp .env.example .env  and set SITE_ADDRESS to your domain."
 	local site
 	site="$(env_value SITE_ADDRESS)"
-	[ -n "$site" ] && [ "$site" != "example.com" ] || die "Set SITE_ADDRESS in .env to the domain of this app."
-	valid_site "$site" || die "SITE_ADDRESS in .env has invalid characters; use just the domain, e.g. app.example.com"
+	[ -n "$site" ] && [ "$site" != "example.com" ] \
+		|| die "No site address: set DEPLOY_SITE_ADDRESS (secret or variable) in the GitHub \"vars\" environment."
+	valid_site "$site" || die "SITE_ADDRESS has invalid characters; use just the domain, e.g. app.example.com"
 	if [ -z "$(env_value LOG_HASH_SALT)" ]; then
 		say "Generating LOG_HASH_SALT in .env"
 		set_env_value LOG_HASH_SALT "$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 	fi
 	chmod 600 "$ROOT/.env"
+	mkdir -p "$ROOT/data" && chmod 700 "$ROOT/data"
 }
 
-require_linger() {
-	if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo no)" != yes ]; then
-		die "The service must keep running after you log out. Run once (as an admin):
-    sudo loginctl enable-linger $(id -un)
-then run ./deploy.sh production again."
+# --- Keeping the app running: systemd user service (needs linger) or cron ---
+
+linger_on() { [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo no)" = yes ]; }
+
+choose_supervisor() {
+	if command -v systemctl >/dev/null 2>&1 && command -v loginctl >/dev/null 2>&1; then
+		if ! linger_on; then
+			# Lets the user's services run without an open session. Allowed for
+			# oneself on most systems; otherwise via passwordless sudo.
+			loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+			linger_on || { can_sudo && sudo -n loginctl enable-linger "$(id -un)" >/dev/null 2>&1; } || true
+			linger_on && say "Enabled linger for $(id -un) (the app keeps running after logout)"
+		fi
+		if linger_on && systemctl_user show-environment >/dev/null 2>&1; then
+			SUPERVISOR=systemd
+			return 0
+		fi
 	fi
+	if command -v crontab >/dev/null 2>&1; then
+		warn "systemd user services are not available for $(id -un); using a cron watchdog instead."
+		SUPERVISOR=cron
+		return 0
+	fi
+	die "Cannot keep the app running: neither systemd user services (linger) nor cron are available to $(id -un)."
 }
 
-install_service() { # port
-	local unit_dir="$HOME/.config/systemd/user" unit
-	unit="$(cat <<EOF
+unit_dir() { printf '%s' "$HOME/.config/systemd/user"; }
+
+write_if_changed() { # file content -> 0 if written
+	if [ "$(cat "$1" 2>/dev/null || true)" != "$2" ]; then
+		printf '%s\n' "$2" > "$1"
+		return 0
+	fi
+	return 1
+}
+
+install_systemd_service() { # port
+	local dir changed=0
+	dir="$(unit_dir)"
+	mkdir -p "$dir"
+	write_if_changed "$dir/$SERVICE.service" "$(cat <<EOF
 # Generated by deploy.sh for StoryGapBoard. Do not edit: changes are overwritten.
 [Unit]
 Description=StoryGapBoard web app
@@ -392,10 +462,10 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=$ROOT/backend
+WorkingDirectory=$ROOT/current/backend
 EnvironmentFile=-$ROOT/.env
 Environment=DATA_DIR=$ROOT/data
-Environment=FRONTEND_DIST=$ROOT/frontend/dist
+Environment=FRONTEND_DIST=$ROOT/current/frontend/dist
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$ROOT/.venv/bin/uvicorn $(uvicorn_args 127.0.0.1 "$1")
 Restart=on-failure
@@ -408,192 +478,517 @@ TasksMax=256
 [Install]
 WantedBy=default.target
 EOF
-)"
-	mkdir -p "$unit_dir"
-	if [ "$(cat "$unit_dir/$SERVICE.service" 2>/dev/null || true)" != "$unit" ]; then
-		say "Writing $unit_dir/$SERVICE.service"
-		printf '%s\n' "$unit" > "$unit_dir/$SERVICE.service"
-		systemctl_user daemon-reload
-	fi
-	systemctl_user enable --quiet "$SERVICE"
+)" && changed=1
+	# Watchdog: re-applies the Caddy route when Caddy dropped it (API mode).
+	write_if_changed "$dir/$SERVICE-watchdog.service" "$(cat <<EOF
+# Generated by deploy.sh for StoryGapBoard.
+[Unit]
+Description=StoryGapBoard self-healing watchdog
+
+[Service]
+Type=oneshot
+ExecStart=$ROOT/current/deploy.sh supervise $ROOT
+EOF
+)" && changed=1
+	write_if_changed "$dir/$SERVICE-watchdog.timer" "$(cat <<EOF
+# Generated by deploy.sh for StoryGapBoard.
+[Unit]
+Description=StoryGapBoard self-healing watchdog (every minute)
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target
+EOF
+)" && changed=1
+	if [ "$changed" = 1 ]; then systemctl_user daemon-reload; fi
+	systemctl_user enable --quiet "$SERVICE" "$SERVICE-watchdog.timer"
+	systemctl_user start --quiet "$SERVICE-watchdog.timer"
 }
 
-# Caddy must be able to read the snippet as its own user, or a future Caddy
-# restart would fail for EVERY site. Prints the blocking folder, if any.
-caddy_can_read() { # file
-	"$PYTHON_BIN" - "$1" <<'EOF'
-import os, stat, sys
-path = os.path.abspath(sys.argv[1])
-if not os.stat(path).st_mode & stat.S_IROTH:
-    print(path)
+remove_systemd_service() {
+	command -v systemctl >/dev/null 2>&1 || return 0
+	[ -f "$(unit_dir)/$SERVICE.service" ] || return 0
+	systemctl_user disable --now --quiet "$SERVICE" "$SERVICE-watchdog.timer" 2>/dev/null || true
+	rm -f "$(unit_dir)/$SERVICE.service" "$(unit_dir)/$SERVICE-watchdog.service" "$(unit_dir)/$SERVICE-watchdog.timer"
+	systemctl_user daemon-reload 2>/dev/null || true
+}
+
+install_cron() {
+	local lines
+	lines="@reboot $ROOT/current/deploy.sh supervise $ROOT >/dev/null 2>&1 $CRON_TAG
+* * * * * $ROOT/current/deploy.sh supervise $ROOT >/dev/null 2>&1 $CRON_TAG"
+	# Only this app's lines (tagged) are replaced; the rest of the crontab is kept.
+	{ crontab -l 2>/dev/null | grep -vF "$CRON_TAG" || true; printf '%s\n' "$lines"; } | crontab -
+}
+
+remove_cron() {
+	command -v crontab >/dev/null 2>&1 || return 0
+	crontab -l 2>/dev/null | grep -qF "$CRON_TAG" || return 0
+	{ crontab -l 2>/dev/null | grep -vF "$CRON_TAG" || true; } | crontab -
+}
+
+cron_app_pid() {
+	local pid
+	pid="$(cat "$ROOT/.run/app.pid" 2>/dev/null || true)"
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q uvicorn "/proc/$pid/cmdline" 2>/dev/null && printf '%s' "$pid"
+}
+
+cron_start_app() {
+	local port
+	port="$(env_value APP_PORT 8787)"
+	mkdir -p "$ROOT/.run"
+	(
+		export_env_file
+		export DATA_DIR="$ROOT/data" FRONTEND_DIST="$ROOT/current/frontend/dist" PYTHONUNBUFFERED=1
+		cd "$ROOT/current/backend"
+		umask 077
+		local detach=()
+		command -v setsid >/dev/null 2>&1 && detach=(setsid)
+		# 9>&- : the app must not inherit the deploy lock.
+		# shellcheck disable=SC2046
+		nohup "${detach[@]}" "$ROOT/.venv/bin/uvicorn" $(uvicorn_args 127.0.0.1 "$port") \
+			>> "$ROOT/.run/app.log" 2>&1 < /dev/null 9>&- &
+		printf '%s\n' "$!" > "$ROOT/.run/app.pid"
+	)
+}
+
+cron_stop_app() {
+	local pid i
+	pid="$(cron_app_pid || true)"
+	[ -n "$pid" ] || return 0
+	kill "$pid" 2>/dev/null || true
+	for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.5; done
+	kill -9 "$pid" 2>/dev/null || true
+}
+
+app_running() {
+	case "$(cat "$ROOT/.run/supervisor" 2>/dev/null || true)" in
+		systemd) systemctl_user is-active --quiet "$SERVICE" 2>/dev/null ;;
+		cron) [ -n "$(cron_app_pid || true)" ] ;;
+		*) return 1 ;;
+	esac
+}
+
+app_port_running() { cat "$ROOT/.run/port" 2>/dev/null || true; }
+
+restart_app() { # port
+	if [ "$SUPERVISOR" = systemd ]; then
+		remove_cron
+		cron_stop_app
+		install_systemd_service "$1"
+		systemctl_user restart "$SERVICE"
+	else
+		remove_systemd_service
+		cron_stop_app
+		cron_start_app
+		install_cron
+	fi
+	printf '%s\n' "$SUPERVISOR" > "$ROOT/.run/supervisor"
+	printf '%s\n' "$1" > "$ROOT/.run/port"
+}
+
+show_app_log() {
+	if [ "$(cat "$ROOT/.run/supervisor" 2>/dev/null)" = systemd ]; then
+		journalctl --user -u "$SERVICE" -n 40 --no-pager >&2 || true
+	else
+		tail -n 40 "$ROOT/.run/app.log" >&2 2>/dev/null || true
+	fi
+}
+
+# --- Caddy ------------------------------------------------------------------
+# Modes, best first:
+#   import       the main Caddyfile already imports storygapboard.caddy
+#   sudo-import  passwordless sudo: add that one import line (backup + rollback)
+#   api          no sudo: register the site through Caddy's local admin API and
+#                re-apply it every minute if a Caddy reload dropped it
+#   manual       nothing possible (no Caddy CLI / admin API): explain
+
+caddy_file() { env_value CADDYFILE /etc/caddy/Caddyfile; }
+
+caddy_imports_us() { # port
+	grep -qF "$ROOT/$SERVICE.caddy" "$(caddy_file)" 2>/dev/null || \
+		caddy adapt --config "$(caddy_file)" --adapter caddyfile 2>/dev/null | grep -q "127.0.0.1:$1"
+}
+
+# Caddy reads the snippet as its own user: every parent folder must be
+# traversable by others. Folders owned by the deploy user are fixed (o+x only:
+# traversal, no listing); others are reported.
+make_snippet_readable() {
+	local file="$ROOT/$SERVICE.caddy" d
+	chmod 644 "$file"
+	d="$(dirname "$file")"
+	while :; do
+		if [ -n "$(find "$d" -maxdepth 0 ! -perm -o+x 2>/dev/null)" ]; then
+			if [ -O "$d" ]; then chmod o+x "$d"
+			elif can_sudo; then sudo -n chmod o+x "$d"
+			else return 1; fi
+		fi
+		[ "$d" = / ] && break
+		d="$(dirname "$d")"
+	done
+}
+
+caddy_preflight() { # port
+	local new
+	new="$(site_block "$(env_value SITE_ADDRESS)" "$1")"
+	write_if_changed "$ROOT/$SERVICE.caddy" "$new" || true
+	chmod 644 "$ROOT/$SERVICE.caddy"
+	if ! command -v caddy >/dev/null 2>&1; then
+		CADDY_MODE=manual
+	elif caddy_imports_us "$1"; then
+		make_snippet_readable || die "Caddy imports $ROOT/$SERVICE.caddy but cannot read it (a parent folder is not traversable). Nothing was changed."
+		CADDY_MODE=import
+	elif can_sudo && [ -f "$(caddy_file)" ]; then
+		CADDY_MODE=sudo-import
+	else
+		CADDY_MODE=api
+	fi
+}
+
+caddy_reload() {
+	caddy reload --config "$(caddy_file)" --adapter caddyfile >/dev/null 2>&1 \
+		|| { can_sudo && sudo -n systemctl reload caddy >/dev/null 2>&1; }
+}
+
+caddy_admin() { # prints host:port of Caddy's admin API ("" when off/unknown)
+	local listen
+	listen="$(caddy adapt --config "$(caddy_file)" --adapter caddyfile 2>/dev/null | "$ROOT/.venv/bin/python" -c "
+import json, sys
+try:
+    print((json.load(sys.stdin).get('admin') or {}).get('listen') or 'localhost:2019')
+except Exception:
+    print('localhost:2019')
+" 2>/dev/null || echo localhost:2019)"
+	case "$listen" in unix/*|"") return 0 ;; esac
+	printf '%s' "${listen#tcp/}"
+}
+
+# Adds/replaces this app's routes in the running Caddy (tagged with @id, so
+# nothing else is touched). Returns 0 on success.
+caddy_api_apply() {
+	local admin tmp
+	admin="$(caddy_admin)"
+	[ -n "$admin" ] || return 1
+	tmp="$(mktemp -d)"
+	cp "$ROOT/$SERVICE.caddy" "$tmp/Caddyfile"
+	caddy adapt --config "$tmp/Caddyfile" --adapter caddyfile > "$ROOT/.run/caddy-site.json" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+	rm -rf "$tmp"
+	printf '%s\n' "$admin" > "$ROOT/.run/caddy-admin"
+	"$ROOT/.venv/bin/python" - "$admin" "$ROOT/.run/caddy-site.json" <<'EOF'
+import json, sys, urllib.error, urllib.request
+admin, site_file = sys.argv[1], sys.argv[2]
+base = "http://" + admin
+
+def call(method, path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw.strip() else None)
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+
+ours = json.load(open(site_file))
+our_servers = ((ours.get("apps") or {}).get("http") or {}).get("servers") or {}
+status, current = call("GET", "/config/apps/http/servers")
+if status == 404 or current is None:
+    current = {}
+elif status != 200:
     sys.exit(1)
-d = os.path.dirname(path)
-while True:
-    if not os.stat(d).st_mode & stat.S_IXOTH:
-        print(d)
-        sys.exit(1)
-    if d == "/":
-        break
-    d = os.path.dirname(d)
+# Remove what a previous deploy added (only objects tagged with our ids).
+for prefix in ("storygapboard_route_", "storygapboard_server_"):
+    for i in range(100):
+        if call("DELETE", f"/id/{prefix}{i}")[0] == 404:
+            break
+status, current = call("GET", "/config/apps/http/servers")
+current = current or {}
+route_n = server_n = 0
+for srv in our_servers.values():
+    listen = sorted(srv.get("listen") or [])
+    target = next((name for name, s in current.items() if sorted(s.get("listen") or []) == listen), None)
+    if target:
+        for route in reversed(srv.get("routes") or []):
+            route["@id"] = f"storygapboard_route_{route_n}"
+            route_n += 1
+            if call("PUT", f"/config/apps/http/servers/{target}/routes/0", route)[0] != 200:
+                sys.exit(1)
+    else:
+        srv["@id"] = f"storygapboard_server_{server_n}"
+        if not current and server_n == 0:
+            ok = call("PUT", "/config/apps/http", {"servers": {f"storygapboard_{server_n}": srv}})[0] == 200 \
+                or call("POST", "/config/apps/http/servers", {f"storygapboard_{server_n}": srv})[0] == 200
+        else:
+            ok = call("PUT", f"/config/apps/http/servers/storygapboard_{server_n}", srv)[0] == 200
+        if not ok:
+            sys.exit(1)
+        server_n += 1
 EOF
 }
 
-# Before anything is (re)started: write this app's site block and make sure
-# Caddy can use it. Sets CADDY_MODE to: absent | not-imported | ready.
-caddy_preflight() { # port
-	local snippet="$ROOT/$SERVICE.caddy" caddyfile new blocked
-	caddyfile="$(env_value CADDYFILE /etc/caddy/Caddyfile)"
-	new="$(site_block "$(env_value SITE_ADDRESS)" "$1")"
-	if [ "$(cat "$snippet" 2>/dev/null || true)" != "$new" ]; then
-		printf '%s\n' "$new" > "$snippet"
-	fi
-	chmod 644 "$snippet"
-	if ! command -v caddy >/dev/null 2>&1; then
-		CADDY_MODE=absent
+caddy_api_present() {
+	local admin
+	admin="$(cat "$ROOT/.run/caddy-admin" 2>/dev/null || true)"
+	[ -n "$admin" ] || return 1
+	"$ROOT/.venv/bin/python" -c "
+import sys, urllib.request
+for name in ('storygapboard_route_0', 'storygapboard_server_0'):
+    try:
+        urllib.request.urlopen('http://$admin/id/' + name, timeout=5)
+        sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)"
+}
+
+caddy_api_remove() {
+	local admin
+	admin="$(cat "$ROOT/.run/caddy-admin" 2>/dev/null || true)"
+	[ -n "$admin" ] || return 0
+	"$ROOT/.venv/bin/python" -c "
+import urllib.request
+for prefix in ('storygapboard_route_', 'storygapboard_server_'):
+    for i in range(100):
+        try:
+            urllib.request.urlopen(urllib.request.Request('http://$admin/id/%s%d' % (prefix, i), method='DELETE'), timeout=5)
+        except Exception:
+            break" 2>/dev/null || true
+	rm -f "$ROOT/.run/caddy-admin" "$ROOT/.run/caddy-site.json"
+}
+
+caddy_sudo_import() {
+	local cf backup
+	cf="$(caddy_file)"
+	make_snippet_readable || return 1
+	backup="$ROOT/.run/Caddyfile.backup.$(date +%Y%m%d%H%M%S)"
+	cat "$cf" > "$backup" || return 1
+	say "Adding one import line to $cf (backup: $backup)"
+	printf '\n# StoryGapBoard (added by its deploy.sh)\nimport %s\n' "$ROOT/$SERVICE.caddy" | sudo -n tee -a "$cf" >/dev/null || return 1
+	if caddy adapt --config "$cf" --adapter caddyfile >/dev/null 2>&1 && caddy_reload; then
 		return 0
 	fi
-	if ! blocked="$(caddy_can_read "$snippet")"; then
-		die "Caddy's own user cannot read $snippet ($blocked is not readable/traversable by others).
-Fix with: chmod o+x $blocked   (or keep the project under /srv). Nothing was changed."
-	fi
-	if grep -qF "$snippet" "$caddyfile" 2>/dev/null || \
-	   caddy adapt --config "$caddyfile" --adapter caddyfile 2>/dev/null | grep -q "127.0.0.1:$1"; then
-		CADDY_MODE=ready
-	else
-		CADDY_MODE=not-imported
-	fi
+	warn "Caddy rejected the change: restoring $cf"
+	sudo -n tee "$cf" < "$backup" >/dev/null && caddy_reload || true
+	return 1
 }
 
 configure_caddy() { # port
-	local snippet="$ROOT/$SERVICE.caddy" caddyfile
-	caddyfile="$(env_value CADDYFILE /etc/caddy/Caddyfile)"
-	case "$CADDY_MODE" in
-		absent)
-			warn "Caddy was not found on this host. Add the site block in $snippet to your proxy so it reaches 127.0.0.1:$1."
-			return 0 ;;
-		not-imported)
-			warn "Your Caddy config does not include this app yet. Add this line ONCE at the end of $caddyfile:
-    import $snippet
-then run ./deploy.sh production again."
-			return 0 ;;
-	esac
 	local applied="$ROOT/.run/caddy.sha256" want
+	want="$(file_hash "$ROOT/$SERVICE.caddy")"
+	case "$CADDY_MODE" in
+		import)
+			caddy_api_remove
+			[ "$(cat "$applied" 2>/dev/null || true)" = "$want" ] && return 0  # unchanged: leave Caddy alone
+			caddy adapt --config "$(caddy_file)" --adapter caddyfile >/dev/null 2>&1 \
+				|| die "The Caddy config does not parse with this site block; Caddy was NOT reloaded."
+			say "Reloading Caddy (graceful; Caddy keeps the old config if this fails)"
+			if caddy_reload; then printf '%s\n' "$want" > "$applied"
+			else warn "Could not reload Caddy; the site keeps its previous Caddy configuration."; fi
+			;;
+		sudo-import)
+			caddy_api_remove
+			if caddy_sudo_import; then printf '%s\n' "$want" > "$applied"; return 0; fi
+			CADDY_MODE=api
+			configure_caddy "$1"
+			;;
+		api)
+			if caddy_api_apply; then
+				say "Registered the site in Caddy through its admin API (re-applied automatically if Caddy reloads)"
+				printf 'api\n' > "$ROOT/.run/caddy-mode"
+			else
+				CADDY_MODE=manual
+				configure_caddy "$1"
+			fi
+			;;
+		manual)
+			rm -f "$ROOT/.run/caddy-mode"
+			warn "Could not configure Caddy automatically (no Caddy CLI, admin API or sudo). The app runs on 127.0.0.1:$1; its site block is $ROOT/$SERVICE.caddy."
+			;;
+	esac
+	[ "$CADDY_MODE" = api ] || rm -f "$ROOT/.run/caddy-mode"
+}
+
+# --- Releases -----------------------------------------------------------------
+
+switch_current() { # release dir
+	ln -sfn "$1" "$ROOT/current.new"
+	mv -T "$ROOT/current.new" "$ROOT/current"
+}
+
+prune_releases() {
+	local keep cur
+	cur="$(readlink -f "$ROOT/current" 2>/dev/null || true)"
+	# Newest first; keep KEEP_RELEASES and always the current one.
+	ls -1dt "$ROOT"/releases/*/ 2>/dev/null | tail -n +"$((KEEP_RELEASES + 1))" | while read -r keep; do
+		[ "$(readlink -f "$keep")" = "$cur" ] || rm -rf "$keep"
+	done
+}
+
+lock_or_wait() {
 	mkdir -p "$ROOT/.run"
-	want="$(file_hash "$snippet")"
-	if [ "$(cat "$applied" 2>/dev/null || true)" = "$want" ]; then
-		return 0  # unchanged: leave Caddy (and the other sites) alone
-	fi
-	caddy adapt --config "$caddyfile" --adapter caddyfile >/dev/null 2>&1 \
-		|| die "The Caddy config does not parse with this site block; Caddy was NOT reloaded. Check: caddy adapt --config $caddyfile"
-	say "Reloading Caddy (graceful; Caddy keeps the old config if this fails)"
-	if caddy reload --config "$caddyfile" --adapter caddyfile >/dev/null 2>&1; then
-		printf '%s\n' "$want" > "$applied"
-	else
-		warn "Could not reload Caddy from this user (admin API off?). Run: sudo systemctl reload caddy"
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"$ROOT/.run/deploy.lock"
+		flock -w 900 9 || die "Another deploy is still running."
 	fi
 }
 
-production() { # action
-	local port
-	case "$1" in
-		status) systemctl_user status "$SERVICE" --no-pager; return ;;
-		logs) journalctl --user -u "$SERVICE" -f -n 200; return ;;
-		stop) systemctl_user stop "$SERVICE"; return ;;
-		restart) systemctl_user restart "$SERVICE"; return ;;
-		up) ;;
-		*) usage 1 ;;
-	esac
-	update_code production up
-	check_dependencies production
-	prepare_production_env
-	require_linger
+release_up() { # state sha
+	ROOT="$1"
+	CODE="$ROOT/releases/$2"
+	[ -f "$CODE/deploy.sh" ] || die "Release $2 is missing."
+	lock_or_wait
+	check_server_basics
+	prepare_env
+	local port previous current_port
 	port="$(env_value APP_PORT 8787)"
-	[[ "$port" =~ ^[0-9]+$ ]] || die "APP_PORT in .env must be a number."
-	# Pre-flight checks first: on failure nothing has been built or restarted.
-	# The port may be busy only if it is this app's running service holding it.
-	local current_port=""
-	if systemctl_user is-active --quiet "$SERVICE"; then
-		current_port="$(sed -n 's/^ExecStart=.* --port \([0-9]*\) .*/\1/p' "$HOME/.config/systemd/user/$SERVICE.service" 2>/dev/null || true)"
-	fi
+	# Pre-flight: the port may be busy only if it is this app holding it.
+	current_port=""
+	if app_running; then current_port="$(app_port_running)"; [ -n "$current_port" ] || current_port="$port"; fi
 	if [ "$port" != "$current_port" ] && port_in_use "$port"; then
-		die "Port $port is already used by another app. Set a free APP_PORT in .env. Nothing was changed."
+		die "Port $port is already used by another app. Set a free DEPLOY_APP_PORT. Nothing was changed."
 	fi
 	caddy_preflight "$port"
-	setup_backend
-	build_frontend
-	prepare_data_dir
-	install_service "$port"
-	say "Restarting the $SERVICE service"
-	systemctl_user restart "$SERVICE"
+	choose_supervisor
+	ensure_python
+	previous="$(readlink "$ROOT/current" 2>/dev/null || true)"
+	say "Activating release ${2:0:7}"
+	switch_current "$CODE"
+	restart_app "$port"
 	if ! wait_healthy "$port"; then
-		journalctl --user -u "$SERVICE" -n 40 --no-pager >&2 || true
+		show_app_log
+		if [ -n "$previous" ] && [ -d "$previous" ] && [ "$previous" != "$CODE" ]; then
+			warn "The new release is not healthy: rolling back to $(basename "$previous")"
+			switch_current "$previous"
+			restart_app "$port"
+			wait_healthy "$port" && die "Deploy failed; the previous release is running again." \
+				|| die "Deploy failed and the previous release did not come back either."
+		fi
 		die "The app did not become healthy on 127.0.0.1:$port."
 	fi
 	configure_caddy "$port"
-	local site
-	site="$(env_value SITE_ADDRESS)"
-	[[ "$site" == *://* ]] || site="https://$site"
-	say "Deployed: $site  (app on 127.0.0.1:$port)"
+	prune_releases
+	say "Deployed: $(site_url "$(env_value SITE_ADDRESS)")  (release ${2:0:7}, app on 127.0.0.1:$port, supervisor: $SUPERVISOR, caddy: $CADDY_MODE)"
+}
+
+# Every minute (systemd timer or cron): keep the app up (cron mode) and the
+# Caddy route present (API mode). Skips while a deploy is running.
+supervise() { # state
+	ROOT="$1"
+	[ -d "$ROOT/current" ] || exit 0
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"$ROOT/.run/deploy.lock"
+		flock -n 9 || exit 0
+	fi
+	if [ "$(cat "$ROOT/.run/supervisor" 2>/dev/null)" = cron ] && [ -z "$(cron_app_pid || true)" ]; then
+		cron_start_app
+	fi
+	if [ -f "$ROOT/.run/app.log" ] && [ "$(stat -c %s "$ROOT/.run/app.log" 2>/dev/null || echo 0)" -gt 10485760 ]; then
+		tail -c 1048576 "$ROOT/.run/app.log" > "$ROOT/.run/app.log.tmp" && mv "$ROOT/.run/app.log.tmp" "$ROOT/.run/app.log"
+	fi
+	if [ "$(cat "$ROOT/.run/caddy-mode" 2>/dev/null)" = api ] && ! caddy_api_present; then
+		caddy_api_apply || true
+	fi
 }
 
 # --------------------------------------------------------------------------
-# Bootstrap (CI): this script arrives over SSH, so the project folder may not
-# exist yet. Resolve the path, clone the repository when needed, then run the
-# project's own deploy.sh. Never overwrites a folder that is not our checkout.
+# Bootstrap (CI): this script arrives on stdin over SSH. Resolve the project
+# folder (creating it when needed), unpack the release package of the tested
+# commit, then run that release's own deploy.sh. Never touches a non-empty
+# folder that does not belong to StoryGapBoard.
 # --------------------------------------------------------------------------
 
-trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
-
-bootstrap() { # path repo_url [sha]  (settings arrive in SGB_ENV, never as arguments)
-	local path repo sha
-	path="$(trim "${1:-}")"
-	repo="$(trim "${2:-}")"
-	sha="$(trim "${3:-}")"
-	[ -n "$path" ] || die "The project path (DEPLOY_PATH) is empty."
-	case "$path" in
-		"~") path="$HOME" ;;
-		"~/"*) path="$HOME/${path#"~/"}" ;;
+expand_path() { # ~, relative (to $HOME) and trailing slashes
+	local p
+	p="$(trim "$1")"
+	case "$p" in
+		"~") p="$HOME" ;;
+		"~/"*) p="$HOME/${p#"~/"}" ;;
 		/*) ;;
-		*) path="$HOME/$path" ;;  # relative paths are relative to the deploy user's home
+		*) p="$HOME/$p" ;;
 	esac
-	path="${path%/}"
-	command -v git >/dev/null 2>&1 || die "git is not installed on the server: sudo apt install git"
-	if [ -f "$path/deploy.sh" ] && git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-		say "Using the existing checkout in $path"
-	elif [ -e "$path" ] && [ ! -d "$path" ]; then
+	printf '%s' "${p%/}"
+}
+
+bootstrap() { # path sha package package_sha256  (settings arrive in SGB_ENV)
+	local path sha pkg pkg_sha rel
+	path="$(expand_path "${1:-}")"
+	sha="$(trim "${2:-}")"
+	pkg="$(expand_path "${3:-}")"
+	pkg_sha="$(trim "${4:-}")"
+	[ -n "${1:-}" ] || die "The project path (DEPLOY_PATH) is empty."
+	[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit id from CI."
+	check_server_basics
+	[ -f "$pkg" ] || die "The release package did not arrive: $pkg"
+	[ "$(file_hash "$pkg")" = "$pkg_sha" ] || die "The release package is corrupted (checksum mismatch)."
+	if [ -e "$path" ] && [ ! -d "$path" ]; then
 		die "$path exists and is not a folder."
-	elif [ -d "$path" ] && [ -n "$(ls -A "$path" 2>/dev/null)" ]; then
-		die "$path is not empty and is not a StoryGapBoard checkout; refusing to touch it. Use an empty or new folder."
-	else
-		[ -n "$repo" ] || die "No repository URL to clone from."
-		mkdir -p "$path" 2>/dev/null && [ -w "$path" ] || die "User $(id -un) cannot create or write $path. Ask an admin once:
-    sudo mkdir -p $path && sudo chown $(id -un): $path"
-		say "Cloning $repo into $path"
-		git clone --quiet "$repo" "$path" || die "git clone failed."
 	fi
-	[ -x "$path/deploy.sh" ] || chmod +x "$path/deploy.sh"
-	cd "$path"
+	if [ -d "$path" ] && [ -n "$(ls -A "$path" 2>/dev/null)" ] && [ ! -f "$path/.storygapboard" ] \
+		&& ! { [ -f "$path/deploy.sh" ] && [ -f "$path/backend/app/main.py" ]; }; then
+		die "$path is not empty and does not belong to StoryGapBoard; refusing to touch it. Use an empty or new folder."
+	fi
+	if ! mkdir -p "$path" 2>/dev/null || [ ! -w "$path" ]; then
+		if can_sudo; then
+			say "Creating $path with sudo (owned by $(id -un))"
+			sudo -n mkdir -p "$path" && sudo -n chown "$(id -un):$(id -gn)" "$path"
+		fi
+		[ -d "$path" ] && [ -w "$path" ] || die "User $(id -un) cannot create or write $path (and has no passwordless sudo). Use a folder inside $HOME in DEPLOY_PATH."
+	fi
+	touch "$path/.storygapboard"
+	rel="$path/releases/$sha"
+	if [ ! -f "$rel/deploy.sh" ]; then
+		say "Unpacking release ${sha:0:7}"
+		rm -rf "$rel.tmp"
+		mkdir -p "$rel.tmp"
+		tar -xzf "$pkg" -C "$rel.tmp"
+		rm -rf "$rel"
+		mv "$rel.tmp" "$rel"
+	fi
+	rm -f "$pkg"
+	chmod +x "$rel/deploy.sh"
 	# Environment, not arguments: other users on the server can read process
 	# arguments, but not another user's environment.
-	export SGB_ENV="${SGB_ENV:-}" SGB_DEPLOY_SHA="$sha"
+	export SGB_ENV="${SGB_ENV:-}"
 	# stdin is this script itself (bash -s): never let the deploy read from it.
-	exec ./deploy.sh production up < /dev/null
+	exec "$rel/deploy.sh" release-up "$path" "$sha" < /dev/null
+}
+
+# --------------------------------------------------------------------------
+# Optional helpers on the server: PATH/current/deploy.sh production <action>
+# --------------------------------------------------------------------------
+
+production() { # action
+	local here
+	here="$(cd "$(dirname "$0")" && pwd -P)"
+	[ "$(basename "$(dirname "$here")")" = releases ] \
+		|| die "Production deploys run from GitHub Actions. On the server use: <DEPLOY_PATH>/current/deploy.sh production status|logs|restart|stop"
+	ROOT="$(dirname "$(dirname "$here")")"
+	SUPERVISOR="$(cat "$ROOT/.run/supervisor" 2>/dev/null || echo systemd)"
+	case "$1" in
+		status) if app_running; then echo "running ($SUPERVISOR)"; else echo "stopped ($SUPERVISOR)"; fi ;;
+		logs) if [ "$SUPERVISOR" = systemd ]; then journalctl --user -u "$SERVICE" -f -n 200; else tail -n 200 -f "$ROOT/.run/app.log"; fi ;;
+		restart) if [ "$SUPERVISOR" = systemd ]; then systemctl_user restart "$SERVICE"; else cron_stop_app; cron_start_app; fi ;;
+		stop) if [ "$SUPERVISOR" = systemd ]; then systemctl_user stop "$SERVICE"; else remove_cron; cron_stop_app; fi ;;
+		*) usage 1 ;;
+	esac
 }
 
 main() {
 	case "${1:-}" in
-		local|production) ROOT="$(cd "$(dirname "$0")" && pwd)" ;;
-	esac
-	case "${1:-}" in
-		local) run_local ;;
-		production) production "${2:-up}" ;;
-		# Arrives over SSH on stdin: it has no folder of its own (yet).
-		bootstrap) bootstrap "${2:-}" "${3:-}" "${4:-}" ;;
+		local) ROOT="$(cd "$(dirname "$0")" && pwd)"; run_local ;;
+		bootstrap) bootstrap "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+		release-up) release_up "${2:-}" "${3:-}" ;;
+		supervise) supervise "${2:-}" ;;
+		production) production "${2:-status}" ;;
 		-h|--help|help|"") usage 0 ;;
 		*) usage 1 ;;
 	esac
 }
 
-# Everything runs from main(), so a code update cannot change the script mid-run.
+# Everything runs from main(), so replacing this file cannot change a run midway.
 main "$@"
 exit

@@ -96,12 +96,16 @@ jobs:
   deploy:
     name: Deploy to production
     needs: [backend, frontend, audit, run]
-    # Enable by setting the repository variable DEPLOY_ENABLED=true and the
-    # secrets listed in AGENTS.md (DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
-    # DEPLOY_KNOWN_HOSTS, DEPLOY_PATH; optional DEPLOY_PORT).
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    # Enable with the REPOSITORY variable DEPLOY_ENABLED=true (job conditions
+    # cannot see environment variables) and these secrets in the "vars"
+    # environment: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS,
+    # DEPLOY_PATH (optional DEPLOY_PORT). Runs on pushes to main and on manual
+    # "Run workflow" from main.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
-    environment: production
+    environment: vars
     concurrency:
       group: deploy-production
       cancel-in-progress: false

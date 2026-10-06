@@ -1,0 +1,235 @@
+/* StoryGapBoard additions on top of the Dimension template (main.css). */
+
+/* The template toggles display with jQuery; here the `hidden` attribute does it. */
+#wrapper [hidden] { display: none !important; }
+
+/* Home title: "Gap" is hollow (outline only), a literal gap in the word that
+   matches the template's thin white lines. */
+#header h1 .gap {
+  color: transparent;
+  -webkit-text-stroke: 1px rgba(255, 255, 255, 0.9);
+}
+
+.noscript { color: #fff; text-align: center; padding: 2rem; }
+
+.hint {
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.65);
+  margin: 0.5rem 0 0 0;
+}
+.hint.ok { color: #9be7b0; }
+.align-right { text-align: right; }
+
+/* Generate */
+.summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1.25rem;
+  font-size: 0.8rem;
+  margin: -0.75rem 0 1.5rem 0;
+  color: rgba(255, 255, 255, 0.75);
+}
+.summary-line a { border-bottom-style: dotted; }
+.summary-line a.key-set { color: #b5e8bf; }
+.summary-line a.key-missing { color: #f5b5af; }
+
+.ratio-preview { flex: none; }
+.ratio-preview rect { fill: rgba(255, 255, 255, 0.18); stroke: rgba(255, 255, 255, 0.8); stroke-width: 1; stroke-dasharray: 3 2; }
+.ratio-label { display: inline-flex; align-items: center; gap: 0.4rem; }
+.ratio-auto {
+  display: inline-block;
+  font-size: 0.65rem;
+  letter-spacing: 0.1rem;
+  text-transform: uppercase;
+  border: dashed 1px rgba(255, 255, 255, 0.5);
+  border-radius: 3px;
+  padding: 0 0.4rem;
+}
+
+.run-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2rem;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+.run-strip .elapsed {
+  font-family: "Courier New", monospace;
+  min-width: 4.5ch;
+  color: rgba(255, 255, 255, 0.75);
+}
+.status-error { color: #ff9b94; }
+.status-warning { color: #ffd48a; }
+.status-success { color: #9be7b0; }
+.status-info { color: #ffffff; }
+
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  border: solid 2px rgba(255, 255, 255, 0.25);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: sgb-spin 0.8s linear infinite;
+}
+@keyframes sgb-spin { to { transform: rotate(360deg); } }
+
+.result .image.main { margin-bottom: 0.75rem; }
+.result .image.main img { max-height: 70vh; object-fit: contain; background: rgba(0, 0, 0, 0.25); }
+
+/* Compact options row: Ratio, Layout, Size, Format, Seed (tighter gutter than the template's) */
+#main article form > .fields.options {
+  width: calc(100% + 0.75rem);
+  margin: -1.75rem 0 1.5rem -0.75rem;
+}
+#main article form > .fields.options > .field.fifth {
+  width: 20%;
+  padding: 1rem 0 0 0.75rem;
+}
+#main article .fields.options label { font-size: 0.7rem; letter-spacing: 0.15rem; margin-bottom: 0.5rem; }
+#main article .fields.options select,
+#main article .fields.options input[type="text"] {
+  height: 2.5rem;
+  font-size: 0.9rem;
+  padding-left: 0.6rem;
+}
+#main article .fields.options select {
+  padding-right: 1.6rem;
+  background-size: 1rem;
+  background-position: calc(100% - 0.4rem) center;
+}
+
+/* Small "depends on the model" notes */
+.hint.model-note {
+  border-left: solid 2px #ffd48a;
+  padding-left: 0.6rem;
+  margin: 0 0 1.25rem 0;
+}
+
+/* Generate actions: soft green Generate, soft red Cancel, yellow Sound toggle.
+   The template forces button text color with !important, so these do too. */
+#main article input.btn-generate {
+  background-color: #d3efd8;
+  box-shadow: none;
+  color: #1b1f22 !important;
+  font-weight: 600;
+}
+#main article input.btn-generate:hover { background-color: #e1f5e4; }
+#main article input.btn-generate:active { background-color: #c2e6c9; }
+
+#main article input.btn-cancel {
+  background-color: rgba(255, 140, 130, 0.08);
+  box-shadow: inset 0 0 0 1px #f0b4ae;
+  color: #ffd3cf !important;
+}
+#main article input.btn-cancel:hover { background-color: rgba(255, 140, 130, 0.16); }
+#main article input.btn-cancel:active { background-color: rgba(255, 140, 130, 0.24); }
+
+#main article input.btn-sound { box-shadow: none; font-weight: 600; }
+#main article input.btn-sound.is-on { background-color: #f4c430; color: #1b1f22 !important; }
+#main article input.btn-sound.is-on:hover { background-color: #f7d258; }
+#main article input.btn-sound.is-off { background-color: #7a6014; color: #f1e2b3 !important; }
+#main article input.btn-sound.is-off:hover { background-color: #8a6d18; }
+
+/* Files */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1.75rem 1rem;
+  margin-bottom: 1.5rem;
+  border: dashed 1px rgba(255, 255, 255, 0.45);
+  border-radius: 4px;
+  text-align: center;
+  transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out;
+}
+.dropzone p { margin: 0; }
+.dropzone .icon { font-size: 1.75rem; }
+.dropzone.is-dragging { background-color: rgba(255, 255, 255, 0.075); border-color: #ffffff; }
+.dropzone.is-full { opacity: 0.6; }
+
+.file-table td { vertical-align: middle; }
+.file-table td.thumb { width: 3.5rem; }
+.file-table td.thumb img {
+  width: 2.75rem;
+  height: 2.75rem;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+}
+.file-table td.name {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+ul.plain { list-style: none; padding-left: 0; margin: 0; }
+ul.plain li { padding-left: 0; }
+
+/* Model */
+.key-row { display: flex; gap: 0.75rem; align-items: center; }
+.key-row input { flex: 1; min-width: 0; }
+
+/* Inline messages and toasts (the app never uses browser alerts) */
+.message {
+  border-left: solid 3px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.75rem 1rem;
+  margin: 0 0 1.5rem 0;
+  font-size: 0.85rem;
+}
+.message-error { border-color: #ff9b94; }
+.message-warning { border-color: #ffd48a; }
+.message-success { border-color: #9be7b0; }
+.message-info { border-color: #ffffff; }
+
+.toasts {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(26rem, calc(100vw - 2rem));
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 0.75rem 0.75rem 1rem;
+  background: rgba(27, 31, 34, 0.95);
+  border-left: solid 3px #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.4);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.toast span { flex: 1; }
+.toast-error { border-color: #ff9b94; }
+.toast-warning { border-color: #ffd48a; }
+.toast-success { border-color: #9be7b0; }
+/* reset the template's big button look for the small dismiss cross */
+.toasts button.toast-close {
+  box-shadow: none;
+  height: auto;
+  line-height: 1;
+  padding: 0 0.25rem;
+  font-size: 1.1rem;
+  letter-spacing: 0;
+  color: rgba(255, 255, 255, 0.75);
+}
+.toasts button.toast-close:hover { background: none; color: #ffffff; }
+
+@media screen and (max-width: 736px) {
+  #main article form > .fields.options > .field.fifth { width: 33.333%; }
+  .key-row { flex-direction: column; align-items: stretch; }
+  .file-table td.name { max-width: 7rem; }
+}
+@media screen and (max-width: 480px) {
+  #main article form > .fields.options > .field.fifth { width: 50%; }
+}

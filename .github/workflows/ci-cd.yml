@@ -1,0 +1,111 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (lint + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: python -m unittest discover -s tests -t . -v
+
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit && pip-audit -r backend/requirements.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
+
+  stack:
+    name: Docker stack smoke test
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Same command as on a developer machine: the full stack behind Caddy.
+      - run: ./deploy.sh local
+      - name: Smoke test through Caddy
+        run: |
+          curl -fsS http://localhost:8080/api/health
+          curl -fsS http://localhost:8080/ | grep -q '<title>StoryGapBoard</title>'
+          curl -fsS -D - -o /dev/null http://localhost:8080/ | grep -qi '^content-security-policy:'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/docs)" = 404
+      - if: failure()
+        run: SITE_ADDRESS=:80 docker compose -p storygapboard-local logs
+      - if: always()
+        run: ./deploy.sh local down
+
+  deploy:
+    name: Deploy to production
+    needs: [backend, frontend, audit, stack]
+    # Enable by setting the repository variable DEPLOY_ENABLED=true and the
+    # secrets listed in AGENTS.md (DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+    # DEPLOY_KNOWN_HOSTS, DEPLOY_PATH; optional DEPLOY_PORT).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Run ./deploy.sh production on the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_NAME: ${{ secrets.DEPLOY_USER }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          APP_PATH: ${{ secrets.DEPLOY_PATH }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -p "${PORT:-22}" -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$USER_NAME@$HOST" "cd \"$APP_PATH\" && ./deploy.sh production"

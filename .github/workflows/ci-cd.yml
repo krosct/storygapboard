@@ -9,9 +9,11 @@ on:
 permissions:
   contents: read
 
+# Superseded pull request runs are cancelled; runs on main never are, so a
+# deploy is never interrupted halfway (newer main runs wait in the queue).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:
@@ -30,6 +32,11 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: python -m unittest discover -s tests -t . -v
+      - name: Deploy settings list is the same in deploy.sh and the workflow
+        working-directory: .
+        run: |
+          diff <(bash -c "$(sed -n '/^ENV_KEYS=(/,/^)/p' deploy.sh)"'; for e in "${ENV_KEYS[@]}"; do echo "${e%%:*}"; done') \
+               <(sed -n 's/^ *ENV_KEYS: //p' .github/workflows/ci-cd.yml | tr ' ' '\n')
 
   frontend:
     name: Frontend (typecheck + build)
@@ -97,12 +104,13 @@ jobs:
     name: Deploy to production
     needs: [backend, frontend, audit, run]
     # Enable with the REPOSITORY variable DEPLOY_ENABLED=true (job conditions
-    # cannot see environment variables) and these secrets in the "vars"
-    # environment: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS,
-    # DEPLOY_PATH (created and cloned if missing), optional DEPLOY_PORT and
-    # DEPLOY_SITE_ADDRESS (source of truth for SITE_ADDRESS: creates .env and
-    # updates it whenever the secret changes). Runs on pushes to
-    # main and on manual "Run workflow" from main.
+    # cannot see environment variables). In the "vars" environment:
+    #  - connection secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+    #    DEPLOY_KNOWN_HOSTS, DEPLOY_PATH (created and cloned if missing), DEPLOY_PORT (optional);
+    #  - app settings, each optional, as a secret or a variable named DEPLOY_<KEY>
+    #    for every .env key listed below. When set they are the source of truth:
+    #    deploy.sh validates them and updates .env whenever they change.
+    # Runs on pushes to main and on manual "Run workflow" from main.
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
@@ -121,17 +129,47 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           APP_PATH: ${{ secrets.DEPLOY_PATH }}
           PORT: ${{ secrets.DEPLOY_PORT }}
-          SITE: ${{ secrets.DEPLOY_SITE_ADDRESS }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          # Keep this list in sync with ENV_KEYS in deploy.sh.
+          ENV_KEYS: SITE_ADDRESS PUBLIC_URL APP_PORT CADDYFILE LOG_HASH_SALT RATE_API_PER_MINUTE RATE_GENERATE_PER_MINUTE RATE_GENERATE_PER_DAY MAX_JOBS_PER_CLIENT MAX_CONCURRENT_JOBS AUTH_FAILURES_BEFORE_LOCK AUTH_FAILURE_WINDOW_S AUTH_LOCK_S JOB_TTL_S MAX_STORED_JOBS
+          ENV_SITE_ADDRESS: ${{ secrets.DEPLOY_SITE_ADDRESS || vars.DEPLOY_SITE_ADDRESS }}
+          ENV_PUBLIC_URL: ${{ secrets.DEPLOY_PUBLIC_URL || vars.DEPLOY_PUBLIC_URL }}
+          ENV_APP_PORT: ${{ secrets.DEPLOY_APP_PORT || vars.DEPLOY_APP_PORT }}
+          ENV_CADDYFILE: ${{ secrets.DEPLOY_CADDYFILE || vars.DEPLOY_CADDYFILE }}
+          ENV_LOG_HASH_SALT: ${{ secrets.DEPLOY_LOG_HASH_SALT || vars.DEPLOY_LOG_HASH_SALT }}
+          ENV_RATE_API_PER_MINUTE: ${{ secrets.DEPLOY_RATE_API_PER_MINUTE || vars.DEPLOY_RATE_API_PER_MINUTE }}
+          ENV_RATE_GENERATE_PER_MINUTE: ${{ secrets.DEPLOY_RATE_GENERATE_PER_MINUTE || vars.DEPLOY_RATE_GENERATE_PER_MINUTE }}
+          ENV_RATE_GENERATE_PER_DAY: ${{ secrets.DEPLOY_RATE_GENERATE_PER_DAY || vars.DEPLOY_RATE_GENERATE_PER_DAY }}
+          ENV_MAX_JOBS_PER_CLIENT: ${{ secrets.DEPLOY_MAX_JOBS_PER_CLIENT || vars.DEPLOY_MAX_JOBS_PER_CLIENT }}
+          ENV_MAX_CONCURRENT_JOBS: ${{ secrets.DEPLOY_MAX_CONCURRENT_JOBS || vars.DEPLOY_MAX_CONCURRENT_JOBS }}
+          ENV_AUTH_FAILURES_BEFORE_LOCK: ${{ secrets.DEPLOY_AUTH_FAILURES_BEFORE_LOCK || vars.DEPLOY_AUTH_FAILURES_BEFORE_LOCK }}
+          ENV_AUTH_FAILURE_WINDOW_S: ${{ secrets.DEPLOY_AUTH_FAILURE_WINDOW_S || vars.DEPLOY_AUTH_FAILURE_WINDOW_S }}
+          ENV_AUTH_LOCK_S: ${{ secrets.DEPLOY_AUTH_LOCK_S || vars.DEPLOY_AUTH_LOCK_S }}
+          ENV_JOB_TTL_S: ${{ secrets.DEPLOY_JOB_TTL_S || vars.DEPLOY_JOB_TTL_S }}
+          ENV_MAX_STORED_JOBS: ${{ secrets.DEPLOY_MAX_STORED_JOBS || vars.DEPLOY_MAX_STORED_JOBS }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          # deploy.sh travels over SSH, so the folder on the server may not exist
-          # yet: "bootstrap" creates/clones it, then runs ./deploy.sh production.
-          remote="bash -s -- bootstrap $(printf '%q' "$APP_PATH") $(printf '%q' "$REPO_URL") $(printf '%q' "$SITE")"
-          ssh -i ~/.ssh/deploy_key -p "$(printf '%s' "${PORT:-22}" | tr -d '[:space:]')" \
+          # App settings as "KEY=value" lines (deploy.sh validates every one).
+          settings=""
+          for key in $ENV_KEYS; do
+            name="ENV_$key"
+            value="${!name//$'\r'/}"
+            value="${value%$'\n'}"
+            [ -n "$value" ] || continue
+            if [[ "$value" == *$'\n'* ]]; then
+              echo "::error::DEPLOY_$key has more than one line"; exit 1
+            fi
+            settings+="$key=$value"$'\n'
+          done
+          # deploy.sh travels over SSH (the folder on the server may not exist
+          # yet). Settings go inside that stream, never as command arguments,
+          # and the server deploys exactly the commit tested by this run.
+          remote="bash -s -- bootstrap $(printf '%q' "$APP_PATH") $(printf '%q' "$REPO_URL") $(printf '%q' "$GITHUB_SHA")"
+          { printf 'SGB_ENV=%q\n' "$settings"; cat deploy.sh; } | ssh -i ~/.ssh/deploy_key \
+            -p "$(printf '%s' "${PORT:-22}" | tr -d '[:space:]')" \
             -o StrictHostKeyChecking=yes -o BatchMode=yes \
             "$(printf '%s' "$USER_NAME" | tr -d '[:space:]')@$(printf '%s' "$HOST" | tr -d '[:space:]')" \
-            "$remote" < deploy.sh
+            "$remote"

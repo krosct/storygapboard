@@ -1,0 +1,56 @@
+# --- Local agent instructions (not shared) ---
+AGENTS.md
+CLAUDE.md
+.claude/
+
+# --- Secrets and configuration (keys, domains, salts) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.kdbx
+secrets/
+credentials*
+
+# --- Server data and logs (prompts, hashed client ids) ---
+data/
+backend/data/
+*.log
+*.csv
+logs/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+npm-debug.log*
+
+# --- Editors / OS / local machine traces ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.directory
+*.desktop
+.bash_history
+.python-version
+.tool-versions
+docker-compose.override.yml

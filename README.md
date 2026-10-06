@@ -20,27 +20,38 @@ with a grid of panels: 1x3, 1x6, 2x1, 2x2, 2x3, 3x1 or 3x2, rows x columns), usi
   concurrency cap, a temporary lock after repeated rejected keys, body size caps, strict security
   headers (CSP, frame denial, no referrer) and no API docs endpoint.
 
-## Run locally (same stack as production)
+## Requirements
 
-Requires Docker with the compose plugin.
+Python 3.10+ (with `venv`) and Node.js 20.19+ / 22.12+ with npm. In production also git, systemd and an
+existing Caddy. No Docker. `deploy.sh` checks all of this and never installs system packages.
 
-```bash
-./deploy.sh local          # http://localhost:8080
-./deploy.sh local down     # stop
-```
-
-## Deploy
-
-On a server with Docker and a domain pointing at it:
+## Run locally (same build and server command as production)
 
 ```bash
-git clone <this repository> storygapboard && cd storygapboard
-cp .env.example .env       # set SITE_ADDRESS to your domain
-./deploy.sh production     # builds, starts app + Caddy (automatic HTTPS)
+./deploy.sh local          # http://localhost:8080 — Ctrl+C stops it
 ```
 
-`./deploy.sh production` also updates the checkout (fast-forward only) before building. Pushes to
-`main` can deploy automatically through GitHub Actions; see `.github/workflows/ci-cd.yml`.
+If Caddy is installed it is used in front of the app, as in production.
+
+## Deploy on a server that already runs other apps behind Caddy
+
+The app runs natively as a **user** systemd service listening on `127.0.0.1` only. The deploy only touches
+this project folder and its own unit file (`~/.config/systemd/user/storygapboard.service`); it never edits
+your main Caddyfile and reloads Caddy only when this app's site block changes.
+
+```bash
+sudo mkdir -p /srv/storygapboard && sudo chown deploy: /srv/storygapboard   # once, as an admin
+sudo loginctl enable-linger deploy                                            # once: keep the service after logout
+git clone <this repository> /srv/storygapboard && cd /srv/storygapboard        # as the deploy user
+cp .env.example .env       # set SITE_ADDRESS (and APP_PORT if 8787 is taken)
+./deploy.sh production     # first run prints the one line to add to your Caddyfile:
+#   import /srv/storygapboard/storygapboard.caddy
+./deploy.sh production     # run again after adding it: Caddy picks up the site
+```
+
+Other commands: `./deploy.sh production status|logs|stop|restart`. Each run updates the checkout
+(fast-forward only), dependencies and the build. Pushes to `main` can deploy automatically through GitHub
+Actions; see `.github/workflows/ci-cd.yml`.
 
 ## Development
 

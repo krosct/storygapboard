@@ -62,28 +62,40 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
         working-directory: frontend
 
-  stack:
-    name: Docker stack smoke test
+  run:
+    name: Local run smoke test (./deploy.sh local)
     needs: [backend, frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # Same command as on a developer machine: the full stack behind Caddy.
-      - run: ./deploy.sh local
-      - name: Smoke test through Caddy
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      # Same command as on a developer machine; it builds and serves natively.
+      - name: Start the app
         run: |
-          curl -fsS http://localhost:8080/api/health
+          ./deploy.sh local > run.log 2>&1 &
+          for i in $(seq 1 180); do
+            curl -fsS http://localhost:8080/api/health && exit 0
+            sleep 1
+          done
+          cat run.log
+          exit 1
+      - name: Smoke test
+        run: |
           curl -fsS http://localhost:8080/ | grep -q '<title>StoryGapBoard</title>'
           curl -fsS -D - -o /dev/null http://localhost:8080/ | grep -qi '^content-security-policy:'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/docs)" = 404
+          curl -fsS http://localhost:8080/api/meta | grep -q '"layouts"'
       - if: failure()
-        run: SITE_ADDRESS=:80 docker compose -p storygapboard-local logs
-      - if: always()
-        run: ./deploy.sh local down
+        run: cat run.log
 
   deploy:
     name: Deploy to production
-    needs: [backend, frontend, audit, stack]
+    needs: [backend, frontend, audit, run]
     # Enable by setting the repository variable DEPLOY_ENABLED=true and the
     # secrets listed in AGENTS.md (DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
     # DEPLOY_KNOWN_HOSTS, DEPLOY_PATH; optional DEPLOY_PORT).

@@ -22,10 +22,12 @@ with a grid of panels: 1x3, 1x6, 2x1, 2x2, 2x3, 3x1 or 3x2, rows x columns), usi
 
 ## Requirements
 
-Python 3.10+ (with `venv`) and Node.js 20.19+ / 22.12+ with npm. In production also git, systemd and an
-existing Caddy. No Docker. `deploy.sh` checks all of this and never installs system packages.
+- **Local:** Python 3.10+ (with `venv`) and Node.js 20.19+ / 22.12+ with npm.
+- **Server:** nothing to install or prepare by hand. Basic Linux tools (`tar`, `curl` or `wget`) and an
+  SSH user are enough: GitHub Actions ships a ready release (built frontend included), and `deploy.sh`
+  brings its own Python (via a pinned, checksum-verified `uv`). No git, Node or Python packages needed.
 
-## Run locally (same build and server command as production)
+## Run locally
 
 ```bash
 ./deploy.sh local          # http://localhost:8080 — Ctrl+C stops it
@@ -33,29 +35,30 @@ existing Caddy. No Docker. `deploy.sh` checks all of this and never installs sys
 
 If Caddy is installed it is used in front of the app, as in production.
 
-## Deploy on a server that already runs other apps behind Caddy
+## Deploy (GitHub Actions → server that already runs other apps behind Caddy)
 
-The app runs natively as a **user** systemd service listening on `127.0.0.1` only. The deploy only touches
-this project folder and its own unit file (`~/.config/systemd/user/storygapboard.service`); it never edits
-your main Caddyfile and reloads Caddy only when this app's site block changes.
+Every push to `main` that passes the checks (or a manual "Run workflow") builds a release package of exactly
+that commit and sends it with `deploy.sh` over SSH. On the server the script, on its own:
 
-```bash
-sudo mkdir -p /srv/storygapboard && sudo chown deploy: /srv/storygapboard   # once, as an admin
-sudo loginctl enable-linger deploy                                            # once: keep the service after logout
-git clone <this repository> /srv/storygapboard && cd /srv/storygapboard        # as the deploy user
-cp .env.example .env       # set SITE_ADDRESS (and APP_PORT if 8787 is taken)
-./deploy.sh production     # first run prints the one line to add to your Caddyfile:
-#   import /srv/storygapboard/storygapboard.caddy
-./deploy.sh production     # run again after adding it: Caddy picks up the site
-```
+- creates the project folder (`DEPLOY_PATH`; with passwordless sudo also outside the user's home);
+- unpacks the release into `releases/<commit>/` and switches `current` to it, **rolling back to the previous
+  release automatically** if the new one fails its health check;
+- installs its own Python 3.12 and the backend dependencies inside the project folder;
+- writes `.env` from the `DEPLOY_<KEY>` GitHub secrets/variables (validated; updated when they change);
+- keeps the app running as a user systemd service (enabling linger itself, or via sudo) or, if that is not
+  possible, with a cron watchdog that restarts it;
+- publishes the site in the existing Caddy: via the Caddyfile `import` if it is already there, by adding that
+  one line itself when it has passwordless sudo (backup + validation + rollback), or otherwise through Caddy's
+  local admin API, re-applied automatically every minute if Caddy reloads.
 
-Other commands: `./deploy.sh production status|logs|stop|restart`. Each run updates the checkout
-(fast-forward only), dependencies and the build. Pushes to `main` can deploy automatically through GitHub
-Actions; see `.github/workflows/ci-cd.yml`. The CI job sends `deploy.sh` over SSH, so the folder in
-`DEPLOY_PATH` is created and cloned if it does not exist yet, and the server deploys exactly the commit that
-passed the tests. Every `.env` key can also be managed from GitHub as a secret or variable `DEPLOY_<KEY>`
-(e.g. `DEPLOY_SITE_ADDRESS`, `DEPLOY_RATE_GENERATE_PER_DAY`): when set, it is validated and written to `.env`
-whenever it changes.
+It never touches other apps: only its own folder, its own user service/timer or tagged crontab lines, and the
+single import line described above. Helpers on the server: `<DEPLOY_PATH>/current/deploy.sh production
+status|logs|restart|stop`.
+
+GitHub setup: repository variable `DEPLOY_ENABLED=true`; environment `vars` with the secrets `DEPLOY_HOST`,
+`DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_PATH` (optional `DEPLOY_PORT`) and the app
+settings as `DEPLOY_<KEY>` secrets or variables (at least `DEPLOY_SITE_ADDRESS`). See `.env.example` for
+the keys.
 
 ## Development
 

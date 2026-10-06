@@ -4,8 +4,8 @@
 #   ./deploy.sh local                         build and run on http://localhost:8080 (Ctrl+C stops)
 #   ./deploy.sh production [up|status|logs|stop|restart]
 #                                             deploy on a server that may already host other apps
-#   deploy.sh bootstrap PATH REPO_URL [SITE]  (CI, script sent over SSH) create/clone PATH if
-#                                             needed, then run "production" from there
+#   deploy.sh bootstrap PATH REPO_URL [SHA]   (CI, script sent over SSH) create/clone PATH if
+#                                             needed, then deploy exactly commit SHA from there
 #
 # It only creates/updates files that belong to this app: the project folder
 # (.venv, frontend build, data/, .env, storygapboard.caddy) and its own user
@@ -237,13 +237,27 @@ systemctl_user() {
 	systemctl --user "$@"
 }
 
+# Update the checkout, then re-run the (possibly updated) script. From CI
+# (SGB_DEPLOY_SHA) it moves to exactly the commit tested by that run, even if
+# the branch already has newer, untested commits; by hand it fast-forwards to
+# the upstream branch. Local changes on the server are never discarded.
 update_code() {
 	[ "${SGB_SKIP_PULL:-}" = 1 ] && return 0
 	git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
 	git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 || return 0
-	say "Updating the code (fast-forward only)"
 	git -C "$ROOT" fetch --quiet
-	git -C "$ROOT" merge --ff-only --quiet '@{u}' || die "Local changes block a fast-forward update; fix the checkout first."
+	local sha="${SGB_DEPLOY_SHA:-}"
+	if [ -n "$sha" ]; then
+		[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit id from CI: $sha"
+		git -C "$ROOT" merge-base --is-ancestor "$sha" '@{u}' 2>/dev/null \
+			|| die "Commit $sha is not on the deployed branch; refusing to deploy it."
+		say "Moving the code to the tested commit $(git -C "$ROOT" rev-parse --short "$sha")"
+		# --keep moves the branch (forwards or back) and aborts instead of losing local changes.
+		git -C "$ROOT" reset --quiet --keep "$sha" || die "Local changes on the server block the update; fix the checkout first."
+	else
+		say "Updating the code (fast-forward only)"
+		git -C "$ROOT" merge --ff-only --quiet '@{u}' || die "Local changes block a fast-forward update; fix the checkout first."
+	fi
 	SGB_SKIP_PULL=1 exec "$0" "$@"
 }
 
@@ -271,36 +285,84 @@ site_url() { # site -> https URL (unless the site already has a scheme)
 # only (a "{", space or newline could inject Caddy directives).
 valid_site() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]; }
 
-# The DEPLOY_SITE_ADDRESS secret (passed by CI as SGB_SITE_ADDRESS) is the
-# source of truth when set: it creates .env on the first deploy and updates
-# SITE_ADDRESS (and a PUBLIC_URL derived from it) whenever it changes.
-sync_site_from_ci() {
-	local site="${SGB_SITE_ADDRESS:-}" old old_url
-	[ -n "$site" ] || return 0
-	site="${site%/}"
-	valid_site "$site" || die "DEPLOY_SITE_ADDRESS has invalid characters; use just the domain, e.g. app.example.com"
+# Every .env key CI may set (GitHub secret or variable DEPLOY_<KEY>) and how
+# its value is validated. Keep in sync with the deploy job in ci-cd.yml.
+ENV_KEYS=(
+	SITE_ADDRESS:site PUBLIC_URL:url APP_PORT:port CADDYFILE:path LOG_HASH_SALT:salt
+	RATE_API_PER_MINUTE:int RATE_GENERATE_PER_MINUTE:int RATE_GENERATE_PER_DAY:int
+	MAX_JOBS_PER_CLIENT:int MAX_CONCURRENT_JOBS:int AUTH_FAILURES_BEFORE_LOCK:int
+	AUTH_FAILURE_WINDOW_S:int AUTH_LOCK_S:int JOB_TTL_S:int MAX_STORED_JOBS:int
+)
+
+env_key_type() { # key -> type, or fail when the key is not allowed
+	local entry
+	for entry in "${ENV_KEYS[@]}"; do
+		[ "${entry%%:*}" = "$1" ] && { printf '%s' "${entry#*:}"; return 0; }
+	done
+	return 1
+}
+
+valid_value() { # type value
+	case "$1" in
+		site) valid_site "$2" ;;
+		url) [[ "$2" =~ ^https?://[A-Za-z0-9.-]*(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?$ ]] ;;
+		port) [[ "$2" =~ ^[0-9]{4,5}$ ]] && [ "$2" -ge 1024 ] && [ "$2" -le 65535 ] ;;
+		path) [[ "$2" =~ ^/[A-Za-z0-9._/-]+$ ]] ;;
+		salt) [[ "$2" =~ ^[A-Za-z0-9_-]{16,256}$ ]] ;;
+		int) [[ "$2" =~ ^[0-9]{1,9}$ ]] ;;
+		*) return 1 ;;
+	esac
+}
+
+# CI settings (SGB_ENV: "KEY=value" lines from the DEPLOY_<KEY> secrets and
+# variables) are the source of truth: they create .env on the first deploy and
+# overwrite a key whenever its value differs. Keys CI does not send are left as
+# they are. Everything is validated before .env is touched; values are never
+# printed (some are secret), only the names of the keys that changed.
+sync_env_from_ci() {
+	[ -n "${SGB_ENV:-}" ] || return 0
+	local line key value type keys=() values=() i changed=() old_site="" old_url="" new_site="" url_given=0
+	while IFS= read -r line || [ -n "$line" ]; do
+		line="$(trim "$line")"
+		[ -n "$line" ] || continue
+		key="${line%%=*}"
+		value="$(trim "${line#*=}")"
+		[ "$key" = SITE_ADDRESS ] && value="${value%/}"
+		type="$(env_key_type "$key")" || die "CI sent an unknown setting: $key"
+		valid_value "$type" "$value" || die "DEPLOY_$key has an invalid value (expected: $type); .env was not changed."
+		keys+=("$key"); values+=("$value")
+		[ "$key" = SITE_ADDRESS ] && new_site="$value"
+		[ "$key" = PUBLIC_URL ] && url_given=1
+	done <<< "$SGB_ENV"
 	if [ ! -f "$ROOT/.env" ]; then
-		say "Creating .env from .env.example (SITE_ADDRESS=$site)"
+		say "Creating .env from .env.example"
 		cp "$ROOT/.env.example" "$ROOT/.env"
 		chmod 600 "$ROOT/.env"
-		set_env_value SITE_ADDRESS "$site"
-		set_env_value PUBLIC_URL "$(site_url "$site")"
-		return 0
+	else
+		old_site="$(env_value SITE_ADDRESS)"
+		old_url="$(env_value PUBLIC_URL)"
 	fi
-	old="$(env_value SITE_ADDRESS)"
-	[ "$old" = "$site" ] && return 0
-	say "DEPLOY_SITE_ADDRESS changed: updating .env (SITE_ADDRESS ${old:-<empty>} -> $site)"
-	old_url="$(env_value PUBLIC_URL)"
-	set_env_value SITE_ADDRESS "$site"
-	# PUBLIC_URL follows the site unless it was customised by hand.
-	if [ -z "$old_url" ] || [ -z "$old" ] || [ "$old_url" = "$(site_url "$old")" ]; then
-		set_env_value PUBLIC_URL "$(site_url "$site")"
+	for i in "${!keys[@]}"; do
+		if [ "$(env_value "${keys[$i]}")" != "${values[$i]}" ]; then
+			set_env_value "${keys[$i]}" "${values[$i]}"
+			changed+=("${keys[$i]}")
+		fi
+	done
+	# Without its own setting, PUBLIC_URL follows a changed site unless it was customised by hand.
+	if [ -n "$new_site" ] && [ "$url_given" = 0 ] && [ "$old_site" != "$new_site" ]; then
+		if [ -z "$old_url" ] || [ -z "$old_site" ] || [ "$old_url" = "$(site_url "$old_site")" ] || [ "$old_url" = "https://example.com" ]; then
+			set_env_value PUBLIC_URL "$(site_url "$new_site")"
+			changed+=(PUBLIC_URL)
+		fi
+	fi
+	if [ ${#changed[@]} -gt 0 ]; then
+		say "Updated .env from the DEPLOY_* settings: ${changed[*]}"
 	fi
 }
 
 prepare_production_env() {
-	sync_site_from_ci
-	[ -f "$ROOT/.env" ] || die "Missing .env in $ROOT. Either set the DEPLOY_SITE_ADDRESS secret (CI creates it), or run there: cp .env.example .env  and set SITE_ADDRESS to your domain."
+	sync_env_from_ci
+	[ -f "$ROOT/.env" ] || die "Missing .env in $ROOT. Either set DEPLOY_SITE_ADDRESS in GitHub (CI creates .env), or run there: cp .env.example .env  and set SITE_ADDRESS to your domain."
 	local site
 	site="$(env_value SITE_ADDRESS)"
 	[ -n "$site" ] && [ "$site" != "example.com" ] || die "Set SITE_ADDRESS in .env to the domain of this app."
@@ -482,11 +544,11 @@ production() { # action
 
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
 
-bootstrap() { # path repo_url [site]
-	local path repo site
+bootstrap() { # path repo_url [sha]  (settings arrive in SGB_ENV, never as arguments)
+	local path repo sha
 	path="$(trim "${1:-}")"
 	repo="$(trim "${2:-}")"
-	site="$(trim "${3:-}")"
+	sha="$(trim "${3:-}")"
 	[ -n "$path" ] || die "The project path (DEPLOY_PATH) is empty."
 	case "$path" in
 		"~") path="$HOME" ;;
@@ -511,16 +573,21 @@ bootstrap() { # path repo_url [site]
 	fi
 	[ -x "$path/deploy.sh" ] || chmod +x "$path/deploy.sh"
 	cd "$path"
-	export SGB_SITE_ADDRESS="$site"
+	# Environment, not arguments: other users on the server can read process
+	# arguments, but not another user's environment.
+	export SGB_ENV="${SGB_ENV:-}" SGB_DEPLOY_SHA="$sha"
 	# stdin is this script itself (bash -s): never let the deploy read from it.
 	exec ./deploy.sh production up < /dev/null
 }
 
 main() {
-	ROOT="$(cd "$(dirname "$0")" && pwd)"
+	case "${1:-}" in
+		local|production) ROOT="$(cd "$(dirname "$0")" && pwd)" ;;
+	esac
 	case "${1:-}" in
 		local) run_local ;;
 		production) production "${2:-up}" ;;
+		# Arrives over SSH on stdin: it has no folder of its own (yet).
 		bootstrap) bootstrap "${2:-}" "${3:-}" "${4:-}" ;;
 		-h|--help|help|"") usage 0 ;;
 		*) usage 1 ;;

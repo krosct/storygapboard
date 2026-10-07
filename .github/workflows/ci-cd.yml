@@ -215,10 +215,17 @@ jobs:
           for i in $(seq 1 18); do
             code="$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' --max-time 15 "https://$host/api/health" || true)"
             [ "$code" = 200 ] && break
+            # Cloudflare's bot protection (e.g. Bot Fight Mode, which no WAF
+            # rule can skip) challenges this runner at the edge: retrying is useless.
+            grep -qi '^cf-mitigated: *challenge' headers.txt 2>/dev/null && challenged=1 && break
             sleep 10
           done
           via="direct"; grep -qi '^server: cloudflare' headers.txt 2>/dev/null && via="through Cloudflare"
-          echo "https://<site>/api/health from the internet ($via): $code - $(explain "$code")"
+          if [ "${challenged:-0}" = 1 ]; then
+            echo "https://<site>/api/health from the internet ($via): $code - challenged by Cloudflare's bot protection before reaching the server"
+          else
+            echo "https://<site>/api/health from the internet ($via): $code - $(explain "$code")"
+          fi
           for p in 80 443; do
             if timeout 8 bash -c "exec 3<>/dev/tcp/$origin/$p" 2>/dev/null; then
               echo "server port $p reachable from the internet: yes"
@@ -228,6 +235,10 @@ jobs:
             fi
           done
           if [ "$code" != 200 ]; then
+            if [ "${challenged:-0}" = 1 ] && [ "${closed:-0}" != 1 ]; then
+              echo "::warning::Cloudflare's bot protection challenged this check (GitHub's runner is a datacenter client), so the site could not be verified from the internet. The previous step already got 200 through this server's Caddy; browsers pass the challenge."
+              exit 0
+            fi
             if [ "${closed:-0}" = 1 ]; then
               echo "::error::Ports 80/443 of the server are closed from the internet. deploy.sh already opens them in the server's own firewall, so the block is in the cloud provider's firewall (e.g. Oracle Cloud: VCN > Security List > Ingress rules for TCP 80 and 443; AWS: Security Group)."
             else

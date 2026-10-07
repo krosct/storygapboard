@@ -22,9 +22,9 @@ def _int(name: str, default: int) -> int:
 
 @dataclass
 class Settings:
-    # Folder for the server-side generation log (a Docker volume in deploys).
+    # Folder for the server-side generation log (data/ in the project folder).
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("DATA_DIR", "data")))
-    # Built frontend (Vite output); the Docker image copies it here.
+    # Built frontend (Vite output), shipped inside each release.
     frontend_dist: Path = field(default_factory=lambda: Path(
         os.environ.get("FRONTEND_DIST", str(BACKEND_DIR.parent / "frontend" / "dist"))))
     # Public site URL, sent to OpenRouter as HTTP-Referer (optional).

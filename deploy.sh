@@ -25,6 +25,10 @@ SERVER_PYTHON="3.12"           # managed by uv on the server, independent of the
 UV_VERSION="0.12.23"
 UV_SHA256_x86_64="9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
 UV_SHA256_aarch64="6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f"
+# Caddy installed ONLY when the server has none running and ports 80/443 are free.
+CADDY_VERSION="2.11.7"
+CADDY_SHA512_amd64="a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7"
+CADDY_SHA512_arm64="3db36ba90c7a6e8dda40ee3dd71fa08844c76b5fb08f61b31e5e78d2ed38e71c51dc7baed875e50d1ca1279196e84302967237386ae87c91ae9f2aaceada682e"
 KEEP_RELEASES=3
 HEALTH_TIMEOUT_S=60
 CRON_TAG="# storygapboard"
@@ -43,6 +47,11 @@ trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]
 file_hash() {
 	if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
 	else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+sha512() {
+	if command -v sha512sum >/dev/null 2>&1; then sha512sum "$1" | cut -d' ' -f1
+	else shasum -a 512 "$1" | cut -d' ' -f1; fi
 }
 
 port_in_use() { # port [host] (bash only, no Python needed)
@@ -625,7 +634,7 @@ docker_access() {
 }
 
 caddy_discover() {
-	CADDY_KIND=none CADDY_PID="" CADDY_CTR="" CADDY_CTR_NAME="" CADDY_CONF="" CADDY_BIN="" CADDY_HOSTFILE=""
+	CADDY_KIND=none CADDY_PID="" CADDY_CTR="" CADDY_CTR_NAME="" CADDY_CONF="" CADDY_BIN="" CADDY_HOSTFILE="" CADDY_PROBLEM=""
 	local d pid args c
 	for d in /proc/[0-9]*; do
 		[ "$(cat "$d/comm" 2>/dev/null)" = caddy ] || continue
@@ -778,8 +787,10 @@ caddy_preflight() { # port
 		host)
 			write_if_changed "$ROOT/$SERVICE.caddy" "$(site_block "$(env_value SITE_ADDRESS)" "$1")" || true
 			chmod 644 "$ROOT/$SERVICE.caddy"
-			if [ -z "$CADDY_PID" ]; then
-				CADDY_MODE=manual   # installed but not running: nothing to attach to
+			if [ -n "$CADDY_PID" ] && [ "$CADDY_CONF" = "$(own_caddyfile)" ]; then
+				CADDY_MODE=own      # the Caddy this script installed earlier
+			elif [ -z "$CADDY_PID" ]; then
+				own_caddy_preflight  # none running (one installed but stopped is left untouched)
 			elif [ -z "$CADDY_BIN" ] && ! caddy_admin_ok; then
 				CADDY_MODE=manual
 			elif caddy_imports_us "$1"; then
@@ -791,9 +802,201 @@ caddy_preflight() { # port
 				CADDY_MODE=api
 			fi
 			;;
-		*) CADDY_MODE=manual ;;
+		*)
+			write_if_changed "$ROOT/$SERVICE.caddy" "$(site_block "$(env_value SITE_ADDRESS)" "$1")" || true
+			chmod 644 "$ROOT/$SERVICE.caddy"
+			own_caddy_preflight ;;
 	esac
 	printf '%s %s\n' "$APP_HOST" "$TRUSTED" > "$ROOT/.run/net"
+}
+
+# --- Own Caddy: only when the server has no running Caddy -------------------
+# Checked first, never forced: if ports 80/443 already belong to another
+# program (nginx, Apache, ...), nothing is installed. Otherwise a dedicated
+# Caddy (official, pinned, checksum-verified) lives in tools/, runs as this
+# app's own service with its config/certificates under caddy/, and only its
+# binary gets the capability to use ports 80/443 (needs sudo once). A Caddy
+# that is installed on the system but stopped is left untouched.
+
+own_caddy_bin() { printf '%s' "$ROOT/tools/caddy-$CADDY_VERSION/caddy"; }
+own_caddyfile() { printf '%s' "$ROOT/caddy/Caddyfile"; }
+
+port_listener() { # port -> who listens on it ("" when free)
+	local out=""
+	if command -v ss >/dev/null 2>&1; then
+		out="$( { as_root ss -ltnpH "( sport = :$1 )" 2>/dev/null || ss -ltnH "( sport = :$1 )" 2>/dev/null; } \
+			| awk '{print $4, $6}' | sed 's/users:((//; s/,pid=.*//' | head -n1 || true)"
+	elif port_in_use "$1"; then
+		out="127.0.0.1:$1"
+	fi
+	printf '%s' "$out"
+}
+
+find_tool() { # name -> path (also /sbin and /usr/sbin, often outside a user's PATH)
+	local p c
+	p="$(command -v "$1" 2>/dev/null || true)"
+	for c in "/usr/sbin/$1" "/sbin/$1" "/usr/bin/$1"; do
+		[ -z "$p" ] && [ -x "$c" ] && p="$c"
+	done
+	printf '%s' "$p"
+}
+
+own_caddy_preflight() {
+	local busy80 busy443
+	busy80="$(port_listener 80)"; busy443="$(port_listener 443)"
+	if [ -n "$busy80$busy443" ]; then
+		CADDY_MODE=manual
+		CADDY_PROBLEM="no Caddy is running and ports 80/443 already belong to another program (${busy80:+80: $busy80}${busy80:+${busy443:+; }}${busy443:+443: $busy443}); not installing Caddy to avoid breaking it"
+	elif [ "$(id -u)" = 0 ] || can_sudo; then
+		CADDY_MODE=own
+	else
+		CADDY_MODE=manual
+		CADDY_PROBLEM="no Caddy is running; installing one needs passwordless sudo once (to let it use ports 80/443)"
+	fi
+}
+
+ensure_own_caddy() {
+	local arch expected bin tmp setcap getcap
+	case "$(uname -m)" in
+		x86_64|amd64) arch=amd64; expected="$CADDY_SHA512_amd64" ;;
+		aarch64|arm64) arch=arm64; expected="$CADDY_SHA512_arm64" ;;
+		*) CADDY_PROBLEM="unsupported CPU for the Caddy download: $(uname -m)"; return 1 ;;
+	esac
+	bin="$(own_caddy_bin)"
+	if [ ! -x "$bin" ]; then
+		say "Installing Caddy $CADDY_VERSION for this app into tools/ (the server has none running)"
+		tmp="$(mktemp -d)"
+		if ! download "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_${CADDY_VERSION}_linux_$arch.tar.gz" "$tmp/caddy.tgz"; then
+			rm -rf "$tmp"; CADDY_PROBLEM="could not download Caddy"; return 1
+		fi
+		if [ "$(sha512 "$tmp/caddy.tgz")" != "$expected" ]; then
+			rm -rf "$tmp"; CADDY_PROBLEM="the Caddy download failed its checksum"; return 1
+		fi
+		tar -xzf "$tmp/caddy.tgz" -C "$tmp" caddy
+		mkdir -p "$(dirname "$bin")"
+		mv "$tmp/caddy" "$bin"
+		chmod 750 "$bin"
+		rm -rf "$tmp"
+	fi
+	[ "$(id -u)" = 0 ] && return 0
+	# Ports below 1024: grant the capability to THIS binary only (checked first).
+	getcap="$(find_tool getcap)"
+	if [ -n "$getcap" ] && "$getcap" "$bin" 2>/dev/null | grep -q cap_net_bind_service; then
+		return 0
+	fi
+	setcap="$(find_tool setcap)"
+	if [ -z "$setcap" ] && command -v apt-get >/dev/null 2>&1; then
+		say "Installing setcap (libcap2-bin) with sudo"
+		as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libcap2-bin >/dev/null 2>&1 \
+			|| { as_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 \
+				&& as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libcap2-bin >/dev/null 2>&1; } || true
+		setcap="$(find_tool setcap)"
+	fi
+	if [ -z "$setcap" ] || ! as_root "$setcap" cap_net_bind_service=+ep "$bin"; then
+		CADDY_PROBLEM="could not allow Caddy to use ports 80/443 (setcap)"; return 1
+	fi
+	say "Allowed this app's Caddy to use ports 80/443"
+}
+
+own_caddy_pid() {
+	local pid
+	pid="$(cat "$ROOT/.run/caddy.pid" 2>/dev/null || true)"
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q caddy "/proc/$pid/cmdline" 2>/dev/null && printf '%s' "$pid"
+}
+
+own_caddy_running() {
+	if [ "$(cat "$ROOT/.run/supervisor" 2>/dev/null || echo "${SUPERVISOR:-}")" = systemd ]; then
+		systemctl_user is-active --quiet "$SERVICE-caddy" 2>/dev/null
+	else
+		[ -n "$(own_caddy_pid || true)" ]
+	fi
+}
+
+own_caddy_start_cron() {
+	(
+		export XDG_DATA_HOME="$ROOT/caddy/data" XDG_CONFIG_HOME="$ROOT/caddy/config"
+		local detach=()
+		command -v setsid >/dev/null 2>&1 && detach=(setsid)
+		nohup "${detach[@]}" "$(own_caddy_bin)" run --config "$(own_caddyfile)" --adapter caddyfile \
+			>> "$ROOT/.run/caddy.log" 2>&1 < /dev/null 9>&- &
+		printf '%s\n' "$!" > "$ROOT/.run/caddy.pid"
+	)
+}
+
+install_own_caddy_unit() {
+	local dir bin unit
+	dir="$(unit_dir)"; bin="$(own_caddy_bin)"
+	mkdir -p "$dir"
+	# No NoNewPrivileges here: it would block the port capability of the binary.
+	unit="# Generated by deploy.sh for StoryGapBoard: Caddy dedicated to this app.
+[Unit]
+Description=Caddy for StoryGapBoard
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=XDG_DATA_HOME=$ROOT/caddy/data
+Environment=XDG_CONFIG_HOME=$ROOT/caddy/config
+ExecStart=$bin run --config $(own_caddyfile) --adapter caddyfile
+ExecReload=$bin reload --config $(own_caddyfile) --adapter caddyfile --force
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target"
+	if write_if_changed "$dir/$SERVICE-caddy.service" "$unit"; then systemctl_user daemon-reload; fi
+	systemctl_user enable --quiet "$SERVICE-caddy"
+}
+
+# Inbound 80/443 must be open for the site and its certificate: only when a
+# firewall blocks them (ufw rules, or tagged iptables rules if INPUT drops).
+open_web_ports() {
+	local p
+	if command -v ufw >/dev/null 2>&1 && as_root ufw status 2>/dev/null | grep -q "Status: active"; then
+		for p in 80 443; do
+			as_root ufw status 2>/dev/null | grep -qE "^$p(/tcp)?[[:space:]]+ALLOW" && continue
+			say "Allowing inbound port $p in ufw"
+			as_root ufw allow "$p/tcp" comment storygapboard >/dev/null 2>&1 || true
+		done
+	elif command -v iptables >/dev/null 2>&1 && as_root iptables -S INPUT 2>/dev/null | grep -q '^-P INPUT DROP'; then
+		for p in 80 443; do
+			as_root iptables -C INPUT -p tcp --dport "$p" -m comment --comment storygapboard -j ACCEPT 2>/dev/null && continue
+			say "Allowing inbound port $p in iptables"
+			as_root iptables -I INPUT -p tcp --dport "$p" -m comment --comment storygapboard -j ACCEPT 2>/dev/null || true
+		done
+	fi
+}
+
+own_caddy_apply() {
+	local cf state want i
+	ensure_own_caddy || return 1
+	mkdir -p "$ROOT/caddy/data" "$ROOT/caddy/config"
+	chmod 700 "$ROOT/caddy"
+	write_if_changed "$(own_caddyfile)" "$(printf '# Generated by deploy.sh for StoryGapBoard: Caddy dedicated to this app.\n{\n\tadmin unix/%s\n}\n\nimport %s\n' "$ROOT/.run/caddy-admin.sock" "$ROOT/$SERVICE.caddy")" || true
+	cf="$(own_caddyfile)"
+	"$(own_caddy_bin)" adapt --config "$cf" --adapter caddyfile >/dev/null 2>&1 || { CADDY_PROBLEM="the generated Caddy config is invalid"; return 1; }
+	state="$ROOT/.run/caddy.sha256"
+	want="$(cat "$cf" "$ROOT/$SERVICE.caddy" | sha256sum | cut -d' ' -f1)"
+	if [ "$SUPERVISOR" = systemd ]; then
+		install_own_caddy_unit
+		if ! own_caddy_running; then systemctl_user restart "$SERVICE-caddy"
+		elif [ "$(cat "$state" 2>/dev/null || true)" != "$want" ]; then systemctl_user reload "$SERVICE-caddy"; fi
+	else
+		if ! own_caddy_running; then own_caddy_start_cron
+		elif [ "$(cat "$state" 2>/dev/null || true)" != "$want" ]; then
+			"$(own_caddy_bin)" reload --config "$cf" --adapter caddyfile >/dev/null 2>&1 \
+				|| { kill "$(own_caddy_pid)" 2>/dev/null; sleep 1; own_caddy_start_cron; }
+		fi
+	fi
+	for i in $(seq 1 20); do own_caddy_running && break; sleep 0.5; done
+	if ! own_caddy_running; then
+		if [ "$SUPERVISOR" = systemd ]; then journalctl --user -u "$SERVICE-caddy" -n 20 --no-pager >&2 || true
+		else tail -n 20 "$ROOT/.run/caddy.log" >&2 2>/dev/null || true; fi
+		CADDY_PROBLEM="this app's Caddy did not start (see its log above)"; return 1
+	fi
+	printf '%s\n' "$want" > "$state"
+	open_web_ports
+	printf 'own\n' > "$ROOT/.run/caddy-mode"
 }
 
 # Adds/replaces this app's routes in the running host Caddy (tagged with @id,
@@ -983,6 +1186,13 @@ configure_caddy() { # port
 				CADDY_MODE=manual
 			fi
 			;;
+		own)
+			if own_caddy_apply; then
+				say "This app's Caddy is serving the site (installed by deploy.sh; the server had none)"
+			else
+				CADDY_MODE=manual
+			fi
+			;;
 		docker)
 			if caddy_docker_apply "$1"; then
 				printf 'docker\n' > "$ROOT/.run/caddy-mode"
@@ -992,7 +1202,7 @@ configure_caddy() { # port
 			fi
 			;;
 	esac
-	case "$CADDY_MODE" in api|docker) ;; *) rm -f "$ROOT/.run/caddy-mode" ;; esac
+	case "$CADDY_MODE" in api|docker|own) ;; *) rm -f "$ROOT/.run/caddy-mode" ;; esac
 }
 
 # Always printed at the end of a deploy: what was found and whether the site
@@ -1002,6 +1212,7 @@ caddy_report() { # port
 	site="$(env_value SITE_ADDRESS)"
 	host="${site#*://}"; host="${host%%/*}"; host="${host%%:*}"
 	say "Report:"
+	[ "$CADDY_MODE" = own ] && CADDY_KIND="own (installed by deploy.sh in $ROOT/tools)"
 	printf '    caddy: %s%s%s%s\n' "$CADDY_KIND" "${CADDY_PID:+ (pid $CADDY_PID)}" "${CADDY_CTR_NAME:+, container $CADDY_CTR_NAME}" "${CADDY_CONF:+, config $CADDY_CONF}"
 	[ -n "$CADDY_HOSTFILE" ] && printf '    caddyfile on the host: %s\n' "$CADDY_HOSTFILE"
 	printf '    mode: %s; app listens on %s:%s\n' "$CADDY_MODE" "$APP_HOST" "$1"
@@ -1019,12 +1230,12 @@ caddy_report() { # port
 		fi
 	fi
 	if [ "$CADDY_MODE" = manual ]; then
-		case "$CADDY_KIND" in
-			none) warn "No running Caddy was found on this server." ;;
+		if [ -n "${CADDY_PROBLEM:-}" ]; then warn "Site not published: $CADDY_PROBLEM."
+		else case "$CADDY_KIND" in
 			docker) warn "Caddy runs in container ${CADDY_CTR_NAME:-$CADDY_CTR}, but ${DOCKER_PROBLEM:-it could not be configured}." ;;
-			host) if [ -z "$CADDY_PID" ]; then warn "Caddy is installed on this server but not running."
-			      else warn "Caddy runs on the host but neither its CLI nor its admin API is usable, and there is no passwordless sudo."; fi ;;
-		esac
+			host) warn "Caddy runs on the host but neither its CLI nor its admin API is usable, and there is no passwordless sudo." ;;
+			*) warn "Site not published: no usable Caddy." ;;
+		esac; fi
 	fi
 }
 
@@ -1112,6 +1323,10 @@ supervise() { # state
 	case "$(cat "$ROOT/.run/caddy-mode" 2>/dev/null)" in
 		api)
 			if ! caddy_api_present; then caddy_discover; caddy_api_apply || true; fi ;;
+		own)
+			if [ "$(cat "$ROOT/.run/supervisor" 2>/dev/null)" = cron ] && [ -z "$(own_caddy_pid || true)" ] && [ -x "$(own_caddy_bin)" ]; then
+				own_caddy_start_cron
+			fi ;;
 		docker)
 			read -r APP_HOST TRUSTED < "$ROOT/.run/net" 2>/dev/null || true
 			caddy_discover

@@ -4,8 +4,8 @@ export default function AboutArticle({ meta }: { meta: Meta | null }) {
   const limits = meta?.limits
   return (
     <>
-      <p>StoryGapBoard turns a short story, plus optional text notes and reference images, into a storyboard: one
-        AI-generated image with a grid of panels (you pick the layout, e.g. 2x3 = 2 rows and 3 columns), using the
+      <p>StoryGapBoard turns a short story, plus optional text notes and reference images, into a complete storyboard: one
+        image with a grid of panels (you pick the layout, e.g. 2x3 = 2 rows and 3 columns), using the
         image model of your choice on OpenRouter.</p>
       <h3>How it works</h3>
       <ol>

@@ -76,8 +76,8 @@ export default function App() {
           <div className="content">
             <div className="inner">
               <h1>Story<span className="gap">Gap</span>Board</h1>
-              <p>Turn a short story and your own references into a storyboard.<br />
-                Bring your OpenRouter key, pick a model and a layout, and generate.</p>
+              <p>Turn a short story and your own references into a complete storyboard.<br />
+                Bring your own key and create!</p>
             </div>
           </div>
           <nav className="use-middle">
@@ -109,7 +109,7 @@ export default function App() {
         </div>
 
         <footer id="footer" hidden={articleOpen}>
-          <p className="copyright">&copy; StoryGapBoard. Design: <a href="https://html5up.net" rel="noreferrer noopener" target="_blank">HTML5 UP</a>.</p>
+          <p className="copyright">&copy; StoryGapBoard, created by <a href="https://krosct.github.io/" rel="noreferrer noopener" target="_blank">Gabriel Monteiro</a>. Design: <a href="https://html5up.net" rel="noreferrer noopener" target="_blank">HTML5 UP</a>.</p>
         </footer>
       </div>
       <div id="bg"></div>

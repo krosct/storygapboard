@@ -76,8 +76,8 @@ export default function App() {
           <div className="content">
             <div className="inner">
               <h1>Story<span className="gap">Gap</span>Board</h1>
-              <p>Turn a short story and your own references into a storyboard.<br />
-                Bring your OpenRouter key, pick a model and a layout, and generate.</p>
+              <p>Turn a short story and your own references into a complete storyboard.<br />
+                Bring your own key and create!</p>
             </div>
           </div>
           <nav className="use-middle">

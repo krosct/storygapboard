@@ -47,9 +47,17 @@ that commit and sends it with `deploy.sh` over SSH. On the server the script, on
 - writes `.env` from the `DEPLOY_<KEY>` GitHub secrets/variables (validated; updated when they change);
 - keeps the app running as a user systemd service (enabling linger itself, or via sudo) or, if that is not
   possible, with a cron watchdog that restarts it;
-- publishes the site in the existing Caddy: via the Caddyfile `import` if it is already there, by adding that
-  one line itself when it has passwordless sudo (backup + validation + rollback), or otherwise through Caddy's
-  local admin API, re-applied automatically every minute if Caddy reloads.
+- checks before changing anything, and never replaces what other services use: it finds the running Caddy
+  (wherever it is installed, or inside a Docker container) and publishes the site there; only if the server
+  has no running Caddy AND ports 80/443 are free does it install a dedicated Caddy (official, pinned,
+  checksum-verified) inside the project folder, run it as this app's service with automatic HTTPS, and give
+  only that binary the right to use ports 80/443 (needs passwordless sudo once). Publishing on an existing
+  Caddy: via the Caddyfile `import` if it is already there; by adding that one line itself when it has
+  passwordless sudo (backup + validation + rollback); through Caddy's local admin API (re-applied every minute
+  if Caddy reloads); or, when Caddy runs in a container, in a marked block of the Caddyfile it mounts, with the
+  app reachable only from that Docker network (opening just that port in ufw/iptables if a firewall blocks it);
+- ends every deploy with a report in the GitHub log: where Caddy is, who listens on 80/443, whether the
+  domain's DNS points to the server, and an HTTPS request through Caddy.
 
 It never touches other apps: only its own folder, its own user service/timer or tagged crontab lines, and the
 single import line described above. Helpers on the server: `<DEPLOY_PATH>/current/deploy.sh production

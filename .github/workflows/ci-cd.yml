@@ -190,3 +190,48 @@ jobs:
           #    command arguments (other users on the server can read those).
           remote="bash -s -- bootstrap $(printf '%q' "$APP_PATH") $GITHUB_SHA $(printf '%q' "$pkg") $(sha256sum release.tar.gz | cut -d' ' -f1)"
           { printf 'SGB_ENV=%q\n' "$settings"; cat deploy.sh; } | ssh "${ssh_opts[@]}" "$target" "$remote"
+      # From outside the server's network: what a visitor actually gets. Never
+      # prints the server address (the logs of a public repository are public).
+      - name: Check the site from the internet
+        env:
+          SITE: ${{ secrets.DEPLOY_SITE_ADDRESS || vars.DEPLOY_SITE_ADDRESS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          host="${SITE#*://}"; host="${host%%/*}"; host="${host%%:*}"
+          origin="$(printf '%s' "$HOST" | tr -d '[:space:]')"
+          explain() {
+            case "$1" in
+              200) echo "OK" ;;
+              521) echo "Cloudflare cannot connect to the server: ports 80/443 are closed from the internet" ;;
+              522) echo "Cloudflare timed out reaching the server: a firewall drops ports 80/443" ;;
+              523) echo "Cloudflare cannot route to the server: check the DNS record's IP" ;;
+              525) echo "TLS handshake failed between Cloudflare and the server: no certificate on the server yet" ;;
+              526) echo "the server's certificate is not valid for Cloudflare SSL mode Full (strict)" ;;
+              000) echo "no answer (DNS, firewall or certificate)" ;;
+              *) echo "HTTP $1" ;;
+            esac
+          }
+          code=000
+          for i in $(seq 1 18); do
+            code="$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' --max-time 15 "https://$host/api/health" || true)"
+            [ "$code" = 200 ] && break
+            sleep 10
+          done
+          via="direct"; grep -qi '^server: cloudflare' headers.txt 2>/dev/null && via="through Cloudflare"
+          echo "https://<site>/api/health from the internet ($via): $code - $(explain "$code")"
+          for p in 80 443; do
+            if timeout 8 bash -c "exec 3<>/dev/tcp/$origin/$p" 2>/dev/null; then
+              echo "server port $p reachable from the internet: yes"
+            else
+              echo "server port $p reachable from the internet: NO"
+              closed=1
+            fi
+          done
+          if [ "$code" != 200 ]; then
+            if [ "${closed:-0}" = 1 ]; then
+              echo "::error::Ports 80/443 of the server are closed from the internet. deploy.sh already opens them in the server's own firewall, so the block is in the cloud provider's firewall (e.g. Oracle Cloud: VCN > Security List > Ingress rules for TCP 80 and 443; AWS: Security Group)."
+            else
+              echo "::error::The site does not answer yet: $(explain "$code"). See the Report of the previous step."
+            fi
+            exit 1
+          fi

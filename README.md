@@ -59,6 +59,10 @@ that commit and sends it with `deploy.sh` over SSH. On the server the script, on
 - works behind Cloudflare's proxy: visitor IPs are taken from `CF-Connecting-IP` only for connections that
   really come from Cloudflare, and the origin answers in every Cloudflare SSL mode (HTTPS with a Let's
   Encrypt certificate, falling back to Caddy's internal one, plus plain HTTP without redirect for Flexible);
+- keeps **Full (strict)** working behind Cloudflare: a **Cloudflare Origin Certificate** placed at
+  `caddy/origin.pem` + `caddy/origin.key` (paths inside the project folder, no setting needed) is used
+  instead of ACME, because Cloudflare trusts it in Full / Full strict while public clients do not. The
+  helper `push-origin-cert.sh` (local, git-ignored) uploads the pair;
 - opens ports 80/443 in the server's own firewall when it blocks them (ufw, or iptables/ip6tables chains
   that end in a catch-all REJECT/DROP, as in Oracle Cloud images), re-checked every minute after reboots;
 - ends every deploy with a report (where Caddy is, 80/443 listeners, DNS, the site through Caddy, Caddy's
@@ -72,7 +76,7 @@ status|logs|restart|stop`.
 GitHub setup: repository variable `DEPLOY_ENABLED=true`; environment `vars` with the secrets `DEPLOY_HOST`,
 `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_PATH` (optional `DEPLOY_PORT`) and the app
 settings as `DEPLOY_<KEY>` secrets or variables (at least `DEPLOY_SITE_ADDRESS`). See `.env.example` for
-the keys.
+the keys. To keep SSL mode Full (strict), upload a Cloudflare Origin Certificate with `push-origin-cert.sh`.
 
 ## Development
 

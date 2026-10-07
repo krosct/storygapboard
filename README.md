@@ -56,8 +56,14 @@ that commit and sends it with `deploy.sh` over SSH. On the server the script, on
   passwordless sudo (backup + validation + rollback); through Caddy's local admin API (re-applied every minute
   if Caddy reloads); or, when Caddy runs in a container, in a marked block of the Caddyfile it mounts, with the
   app reachable only from that Docker network (opening just that port in ufw/iptables if a firewall blocks it);
-- ends every deploy with a report in the GitHub log: where Caddy is, who listens on 80/443, whether the
-  domain's DNS points to the server, and an HTTPS request through Caddy.
+- works behind Cloudflare's proxy: visitor IPs are taken from `CF-Connecting-IP` only for connections that
+  really come from Cloudflare, and the origin answers in every Cloudflare SSL mode (HTTPS with a Let's
+  Encrypt certificate, falling back to Caddy's internal one, plus plain HTTP without redirect for Flexible);
+- opens ports 80/443 in the server's own firewall when it blocks them (ufw, or iptables/ip6tables chains
+  that end in a catch-all REJECT/DROP, as in Oracle Cloud images), re-checked every minute after reboots;
+- ends every deploy with a report (where Caddy is, 80/443 listeners, DNS, the site through Caddy, Caddy's
+  certificate errors) and an external check from GitHub's network (what a visitor gets, whether 80/443 are
+  open from the internet; a closed port there means the cloud provider's firewall).
 
 It never touches other apps: only its own folder, its own user service/timer or tagged crontab lines, and the
 single import line described above. Helpers on the server: `<DEPLOY_PATH>/current/deploy.sh production

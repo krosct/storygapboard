@@ -109,7 +109,7 @@ export default function App() {
         </div>
 
         <footer id="footer" hidden={articleOpen}>
-          <p className="copyright">&copy; StoryGapBoard. Design: <a href="https://html5up.net" rel="noreferrer noopener" target="_blank">HTML5 UP</a>.</p>
+          <p className="copyright">&copy; StoryGapBoard, created by <a href="https://krosct.github.io/" rel="noreferrer noopener" target="_blank">Gabriel Monteiro</a>. Design: <a href="https://html5up.net" rel="noreferrer noopener" target="_blank">HTML5 UP</a>.</p>
         </footer>
       </div>
       <div id="bg"></div>

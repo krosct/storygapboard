@@ -228,6 +228,8 @@ ul.plain li { padding-left: 0; }
 @media screen and (max-width: 736px) {
   #main article form > .fields.options > .field.fifth { width: 33.333%; }
   .key-row { flex-direction: column; align-items: stretch; }
+  /* in a column, flex: 1 (basis 0) would replace the template's input height */
+  .key-row input { flex: none; }
   .file-table td.name { max-width: 7rem; }
 }
 @media screen and (max-width: 480px) {

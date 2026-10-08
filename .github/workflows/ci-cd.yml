@@ -32,11 +32,6 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: python -m unittest discover -s tests -t . -v
-      - name: Deploy settings list is the same in deploy.sh and the workflow
-        working-directory: .
-        run: |
-          diff <(bash -c "$(sed -n '/^ENV_KEYS=(/,/^)/p' deploy.sh)"'; for e in "${ENV_KEYS[@]}"; do echo "${e%%:*}"; done') \
-               <(sed -n 's/^ *ENV_KEYS: //p' .github/workflows/ci-cd.yml | tr ' ' '\n')
 
   frontend:
     name: Frontend (typecheck + build)
@@ -75,17 +70,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.2.0
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      # Same command as on a developer machine; it builds and serves natively.
+      # The DEV command of deploy.conf, as "deploy.sh local" of devkit runs it on a developer
+      # machine (without a .env: every setting has a default). The job keeps its name because
+      # it is a required check on main.
       - name: Start the app
         run: |
-          ./deploy.sh local > run.log 2>&1 &
-          for i in $(seq 1 180); do
+          bash -c "$(sed -n 's/^DEV="\(.*\)"$/\1/p' deploy.conf)" > run.log 2>&1 &
+          for _ in $(seq 1 180); do
             curl -fsS http://localhost:8080/api/health && exit 0
             sleep 1
           done
@@ -103,14 +98,11 @@ jobs:
   deploy:
     name: Deploy to production
     needs: [backend, frontend, audit, run]
-    # Enable with the REPOSITORY variable DEPLOY_ENABLED=true (job conditions
-    # cannot see environment variables). In the "vars" environment:
-    #  - connection secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
-    #    DEPLOY_KNOWN_HOSTS, DEPLOY_PATH (created and cloned if missing), DEPLOY_PORT (optional);
-    #  - app settings, each optional, as a secret or a variable named DEPLOY_<KEY>
-    #    for every .env key listed below. When set they are the source of truth:
-    #    deploy.sh validates them and updates .env whenever they change.
-    # Runs on pushes to main and on manual "Run workflow" from main.
+    # Published by devkit (krosct/devkit) from deploy.conf: it builds the frontend here, sends
+    # the release over SSH, rolls back if it does not stay up and checks the public address.
+    # Enable with the REPOSITORY variable DEPLOY_ENABLED=true (job conditions cannot see
+    # environment variables). Secrets and variables live in the "vars" environment; the list
+    # is in the README ("Deploy").
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
@@ -121,128 +113,22 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
+      # BUILD (deploy.conf) runs on the runner: the server needs no Node.
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      # The server needs neither git nor Node: it receives a ready release
-      # package of exactly this commit (backend code + built frontend).
-      - name: Build the release package
-        run: |
-          (cd frontend && npm ci --no-audit --no-fund && npm run build)
-          mkdir -p pkg/frontend
-          git archive "$GITHUB_SHA" deploy.sh .env.example backend/requirements.txt backend/app | tar -x -C pkg
-          cp -r frontend/dist pkg/frontend/dist
-          printf '%s\n' "$GITHUB_SHA" > pkg/RELEASE
-          tar -czf release.tar.gz -C pkg .
-          sha256sum release.tar.gz
-      - name: Deploy on the server
-        env:
-          HOST: ${{ secrets.DEPLOY_HOST }}
-          USER_NAME: ${{ secrets.DEPLOY_USER }}
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          APP_PATH: ${{ secrets.DEPLOY_PATH }}
-          PORT: ${{ secrets.DEPLOY_PORT }}
-          # Keep this list in sync with ENV_KEYS in deploy.sh.
-          ENV_KEYS: SITE_ADDRESS PUBLIC_URL APP_PORT CADDYFILE LOG_HASH_SALT RATE_API_PER_MINUTE RATE_GENERATE_PER_MINUTE RATE_GENERATE_PER_DAY MAX_JOBS_PER_CLIENT MAX_CONCURRENT_JOBS AUTH_FAILURES_BEFORE_LOCK AUTH_FAILURE_WINDOW_S AUTH_LOCK_S JOB_TTL_S MAX_STORED_JOBS
-          ENV_SITE_ADDRESS: ${{ secrets.DEPLOY_SITE_ADDRESS || vars.DEPLOY_SITE_ADDRESS }}
-          ENV_PUBLIC_URL: ${{ secrets.DEPLOY_PUBLIC_URL || vars.DEPLOY_PUBLIC_URL }}
-          ENV_APP_PORT: ${{ secrets.DEPLOY_APP_PORT || vars.DEPLOY_APP_PORT }}
-          ENV_CADDYFILE: ${{ secrets.DEPLOY_CADDYFILE || vars.DEPLOY_CADDYFILE }}
-          ENV_LOG_HASH_SALT: ${{ secrets.DEPLOY_LOG_HASH_SALT || vars.DEPLOY_LOG_HASH_SALT }}
-          ENV_RATE_API_PER_MINUTE: ${{ secrets.DEPLOY_RATE_API_PER_MINUTE || vars.DEPLOY_RATE_API_PER_MINUTE }}
-          ENV_RATE_GENERATE_PER_MINUTE: ${{ secrets.DEPLOY_RATE_GENERATE_PER_MINUTE || vars.DEPLOY_RATE_GENERATE_PER_MINUTE }}
-          ENV_RATE_GENERATE_PER_DAY: ${{ secrets.DEPLOY_RATE_GENERATE_PER_DAY || vars.DEPLOY_RATE_GENERATE_PER_DAY }}
-          ENV_MAX_JOBS_PER_CLIENT: ${{ secrets.DEPLOY_MAX_JOBS_PER_CLIENT || vars.DEPLOY_MAX_JOBS_PER_CLIENT }}
-          ENV_MAX_CONCURRENT_JOBS: ${{ secrets.DEPLOY_MAX_CONCURRENT_JOBS || vars.DEPLOY_MAX_CONCURRENT_JOBS }}
-          ENV_AUTH_FAILURES_BEFORE_LOCK: ${{ secrets.DEPLOY_AUTH_FAILURES_BEFORE_LOCK || vars.DEPLOY_AUTH_FAILURES_BEFORE_LOCK }}
-          ENV_AUTH_FAILURE_WINDOW_S: ${{ secrets.DEPLOY_AUTH_FAILURE_WINDOW_S || vars.DEPLOY_AUTH_FAILURE_WINDOW_S }}
-          ENV_AUTH_LOCK_S: ${{ secrets.DEPLOY_AUTH_LOCK_S || vars.DEPLOY_AUTH_LOCK_S }}
-          ENV_JOB_TTL_S: ${{ secrets.DEPLOY_JOB_TTL_S || vars.DEPLOY_JOB_TTL_S }}
-          ENV_MAX_STORED_JOBS: ${{ secrets.DEPLOY_MAX_STORED_JOBS || vars.DEPLOY_MAX_STORED_JOBS }}
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          target="$(printf '%s' "$USER_NAME" | tr -d '[:space:]')@$(printf '%s' "$HOST" | tr -d '[:space:]')"
-          ssh_opts=(-i ~/.ssh/deploy_key -p "$(printf '%s' "${PORT:-22}" | tr -d '[:space:]')" -o StrictHostKeyChecking=yes -o BatchMode=yes)
-          # App settings as "KEY=value" lines (deploy.sh validates every one).
-          settings=""
-          for key in $ENV_KEYS; do
-            name="ENV_$key"
-            value="${!name//$'\r'/}"
-            value="${value%$'\n'}"
-            [ -n "$value" ] || continue
-            if [[ "$value" == *$'\n'* ]]; then
-              echo "::error::DEPLOY_$key has more than one line"; exit 1
-            fi
-            settings+="$key=$value"$'\n'
-          done
-          # 1) upload the package (private folder of the deploy user)
-          pkg="~/.cache/storygapboard/release-$GITHUB_SHA.tar.gz"
-          ssh "${ssh_opts[@]}" "$target" \
-            'umask 077 && mkdir -p "$HOME/.cache/storygapboard" && cat > "$HOME/.cache/storygapboard/release-'"$GITHUB_SHA"'.tar.gz"' \
-            < release.tar.gz
-          # 2) run deploy.sh from the stream: settings go inside it, never as
-          #    command arguments (other users on the server can read those).
-          remote="bash -s -- bootstrap $(printf '%q' "$APP_PATH") $GITHUB_SHA $(printf '%q' "$pkg") $(sha256sum release.tar.gz | cut -d' ' -f1)"
-          { printf 'SGB_ENV=%q\n' "$settings"; cat deploy.sh; } | ssh "${ssh_opts[@]}" "$target" "$remote"
-      # From outside the server's network: what a visitor actually gets. Never
-      # prints the server address (the logs of a public repository are public).
-      - name: Check the site from the internet
-        env:
-          SITE: ${{ secrets.DEPLOY_SITE_ADDRESS || vars.DEPLOY_SITE_ADDRESS }}
-          HOST: ${{ secrets.DEPLOY_HOST }}
-        run: |
-          host="${SITE#*://}"; host="${host%%/*}"; host="${host%%:*}"
-          origin="$(printf '%s' "$HOST" | tr -d '[:space:]')"
-          explain() {
-            case "$1" in
-              200) echo "OK" ;;
-              521) echo "Cloudflare cannot connect to the server: ports 80/443 are closed from the internet" ;;
-              522) echo "Cloudflare timed out reaching the server: a firewall drops ports 80/443" ;;
-              523) echo "Cloudflare cannot route to the server: check the DNS record's IP" ;;
-              525) echo "TLS handshake failed between Cloudflare and the server: no certificate on the server yet" ;;
-              526) echo "the server's certificate is not valid for Cloudflare SSL mode Full (strict)" ;;
-              000) echo "no answer (DNS, firewall or certificate)" ;;
-              *) echo "HTTP $1" ;;
-            esac
-          }
-          code=000
-          for i in $(seq 1 18); do
-            code="$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' --max-time 15 "https://$host/api/health" || true)"
-            [ "$code" = 200 ] && break
-            # Cloudflare's bot protection (e.g. Bot Fight Mode, which no WAF
-            # rule can skip) challenges this runner at the edge: retrying is useless.
-            grep -qi '^cf-mitigated: *challenge' headers.txt 2>/dev/null && challenged=1 && break
-            sleep 10
-          done
-          via="direct"; grep -qi '^server: cloudflare' headers.txt 2>/dev/null && via="through Cloudflare"
-          if [ "${challenged:-0}" = 1 ]; then
-            echo "https://<site>/api/health from the internet ($via): $code - challenged by Cloudflare's bot protection before reaching the server"
-          else
-            echo "https://<site>/api/health from the internet ($via): $code - $(explain "$code")"
-          fi
-          for p in 80 443; do
-            if timeout 8 bash -c "exec 3<>/dev/tcp/$origin/$p" 2>/dev/null; then
-              echo "server port $p reachable from the internet: yes"
-            else
-              echo "server port $p reachable from the internet: NO"
-              closed=1
-            fi
-          done
-          if [ "$code" != 200 ]; then
-            if [ "${challenged:-0}" = 1 ] && [ "${closed:-0}" != 1 ]; then
-              echo "::warning::Cloudflare's bot protection challenged this check (GitHub's runner is a datacenter client), so the site could not be verified from the internet. The previous step already got 200 through this server's Caddy; browsers pass the challenge."
-              exit 0
-            fi
-            if [ "${closed:-0}" = 1 ]; then
-              echo "::error::Ports 80/443 of the server are closed from the internet. deploy.sh already opens them in the server's own firewall, so the block is in the cloud provider's firewall (e.g. Oracle Cloud: VCN > Security List > Ingress rules for TCP 80 and 443; AWS: Security Group)."
-            else
-              echo "::error::The site does not answer yet: $(explain "$code"). See the Report of the previous step."
-            fi
-            exit 1
-          fi
+      - uses: krosct/devkit@main
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          user: ${{ secrets.DEPLOY_USER }}
+          port: ${{ secrets.DEPLOY_PORT || vars.DEPLOY_PORT || '22' }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          known-hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          path: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH }}
+          domain: ${{ secrets.DEPLOY_SITE_ADDRESS || vars.DEPLOY_SITE_ADDRESS }}
+          origin-cert: ${{ secrets.DEPLOY_ORIGIN_CERT }}
+          origin-key: ${{ secrets.DEPLOY_ORIGIN_KEY }}
+          secrets: ${{ toJSON(secrets) }}
+          vars: ${{ toJSON(vars) }}

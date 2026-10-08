@@ -169,15 +169,25 @@ class SecurityHeadersMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        is_api = scope.get("path", "").startswith("/api/")
+        path = scope.get("path", "")
+        is_api = path.startswith("/api/")
+        # Vite build output: file names carry a content hash, so they never change.
+        is_asset = path.startswith("/assets/")
+        # Behind the proxy, uvicorn --proxy-headers sets the scheme from X-Forwarded-Proto.
+        is_https = scope.get("scheme") == "https"
 
         async def wrapped(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = [(k, v) for k, v in message.get("headers", [])
                            if k.lower() not in (b"server", b"x-powered-by")]
                 headers += SECURITY_HEADERS
-                if is_api and not any(k.lower() == b"cache-control" for k, _ in headers):
-                    headers.append((b"cache-control", b"no-store"))
+                if is_https:
+                    headers.append((b"strict-transport-security", b"max-age=31536000"))
+                if not any(k.lower() == b"cache-control" for k, _ in headers):
+                    if is_api:
+                        headers.append((b"cache-control", b"no-store"))
+                    elif is_asset and message["status"] == 200:
+                        headers.append((b"cache-control", b"public, max-age=31536000, immutable"))
                 message["headers"] = headers
             await send(message)
 

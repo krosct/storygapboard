@@ -9,6 +9,8 @@ import csv
 import json
 import unittest
 
+from fastapi.testclient import TestClient
+
 from app import audit, core
 
 from .helpers import API_KEY, ApiTestCase, FakeOpenRouter, tiny_png
@@ -35,6 +37,22 @@ class MetaTests(ApiTestCase, unittest.TestCase):
         self.assertEqual(res.headers["referrer-policy"], "no-referrer")
         self.assertEqual(res.headers["cache-control"], "no-store")
         self.assertNotIn("server", res.headers)
+        self.assertNotIn("strict-transport-security", res.headers)  # plain HTTP (local runs)
+
+    def test_hsts_over_https(self):
+        res = TestClient(self.app, base_url="https://testserver").get("/api/health")
+        self.assertEqual(res.headers["strict-transport-security"], "max-age=31536000")
+
+    def test_hashed_assets_are_cached_for_good(self):
+        dist = self.data_dir / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<title>StoryGapBoard</title>")
+        (dist / "assets" / "index-abc123.js").write_text("console.log(1)")
+        self.rebuild(frontend_dist=dist)
+        asset = self.client.get("/assets/index-abc123.js")
+        self.assertEqual(asset.headers["cache-control"], "public, max-age=31536000, immutable")
+        self.assertNotIn("cache-control", self.client.get("/").headers)
+        self.assertNotIn("cache-control", self.client.get("/assets/missing.js").headers)
 
 
 class GenerateTests(ApiTestCase, unittest.TestCase):

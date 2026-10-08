@@ -98,7 +98,7 @@ jobs:
   deploy:
     name: Deploy to production
     needs: [backend, frontend, audit, run]
-    # Published by devkit (krosct/devkit) from deploy.conf: it builds the frontend here, sends
+    # Published by devkit (krosct/devkit, pinned version) from deploy.conf: it builds the frontend here, sends
     # the release over SSH, rolls back if it does not stay up and checks the public address.
     # Enable with the REPOSITORY variable DEPLOY_ENABLED=true (job conditions cannot see
     # environment variables). Secrets and variables live in the "vars" environment; the list
@@ -119,7 +119,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - uses: krosct/devkit@main
+      - uses: krosct/devkit@v1.0.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           user: ${{ secrets.DEPLOY_USER }}
@@ -130,5 +130,17 @@ jobs:
           domain: ${{ secrets.DEPLOY_SITE_ADDRESS || vars.DEPLOY_SITE_ADDRESS }}
           origin-cert: ${{ secrets.DEPLOY_ORIGIN_CERT }}
           origin-key: ${{ secrets.DEPLOY_ORIGIN_KEY }}
-          secrets: ${{ toJSON(secrets) }}
-          vars: ${{ toJSON(vars) }}
+          preserve: ${{ secrets.DEPLOY_PRESERVE || vars.DEPLOY_PRESERVE }}
+          # App settings (.env on the server), each from a secret or variable DEPLOY_<KEY>. An
+          # unset one is removed from the server's .env and the app uses its default.
+          env: |
+            RATE_API_PER_MINUTE=${{ secrets.DEPLOY_RATE_API_PER_MINUTE || vars.DEPLOY_RATE_API_PER_MINUTE }}
+            RATE_GENERATE_PER_MINUTE=${{ secrets.DEPLOY_RATE_GENERATE_PER_MINUTE || vars.DEPLOY_RATE_GENERATE_PER_MINUTE }}
+            RATE_GENERATE_PER_DAY=${{ secrets.DEPLOY_RATE_GENERATE_PER_DAY || vars.DEPLOY_RATE_GENERATE_PER_DAY }}
+            MAX_JOBS_PER_CLIENT=${{ secrets.DEPLOY_MAX_JOBS_PER_CLIENT || vars.DEPLOY_MAX_JOBS_PER_CLIENT }}
+            MAX_CONCURRENT_JOBS=${{ secrets.DEPLOY_MAX_CONCURRENT_JOBS || vars.DEPLOY_MAX_CONCURRENT_JOBS }}
+            AUTH_FAILURES_BEFORE_LOCK=${{ secrets.DEPLOY_AUTH_FAILURES_BEFORE_LOCK || vars.DEPLOY_AUTH_FAILURES_BEFORE_LOCK }}
+            AUTH_FAILURE_WINDOW_S=${{ secrets.DEPLOY_AUTH_FAILURE_WINDOW_S || vars.DEPLOY_AUTH_FAILURE_WINDOW_S }}
+            AUTH_LOCK_S=${{ secrets.DEPLOY_AUTH_LOCK_S || vars.DEPLOY_AUTH_LOCK_S }}
+            JOB_TTL_S=${{ secrets.DEPLOY_JOB_TTL_S || vars.DEPLOY_JOB_TTL_S }}
+            MAX_STORED_JOBS=${{ secrets.DEPLOY_MAX_STORED_JOBS || vars.DEPLOY_MAX_STORED_JOBS }}

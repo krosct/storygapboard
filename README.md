@@ -66,9 +66,12 @@ GitHub setup: repository **variable** `DEPLOY_ENABLED=true`, and in the `vars` e
 | `DEPLOY_ORIGIN_CERT`, `DEPLOY_ORIGIN_KEY` | optional: Cloudflare Origin Certificate and key (PEM), for SSL "Full (strict)" |
 | `DEPLOY_PATH`, `DEPLOY_PORT` | optional (default: `/srv/storygapboard` and 22) |
 | `DEPLOY_<KEY>` | optional app settings, secret or variable, for the keys of `.env.example` except `LOG_HASH_SALT` (e.g. `DEPLOY_RATE_GENERATE_PER_DAY`) |
+| `DEPLOY_PRESERVE` | optional variable: `true` keeps the values the server already has |
 
-On every deploy the server's `.env` is replaced by these settings: a key that is not set goes back
-to its default.
+Every deploy writes these settings to the server's `.env`: a key that is not set is removed and
+the app uses its default. With `DEPLOY_PRESERVE=true`, a value the server already has stays, and
+GitHub only fills what is missing or empty. To add a setting, add its line to the `env` input of
+the deploy job in `.github/workflows/ci-cd.yml`.
 
 ## 🛠️ Development
 

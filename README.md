@@ -34,19 +34,44 @@ of panels, made by any image model on [OpenRouter](https://openrouter.ai). Visit
 
 ## 🚀 Run locally
 
-Needs Python 3.10+ and Node.js 20.19+ / 22.12+.
+Deploys and local runs use [devkit](https://github.com/krosct/devkit): this repository only has a
+`deploy.conf` with what is specific to StoryGapBoard. Needs [uv](https://docs.astral.sh/uv/) and
+Node.js 20.19+ / 22.12+.
 
 ```bash
-./deploy.sh local          # http://localhost:8080 (Ctrl+C stops it)
+~/Documentos/devkit/deploy.sh local          # http://localhost:8080 (Ctrl+C stops it)
 ```
+
+It creates `.env` from `.env.example` the first time (every setting is optional), sets up `.venv`,
+builds the frontend and serves the app. The generation log goes to `./data`.
 
 ## 📦 Deploy
 
-- ⚙️ GitHub Actions tests, builds and ships a ready release to the server.
-- 🧰 Nothing to install on the server: `deploy.sh` brings its own Python and sets everything up.
-- ↩️ Automatic rollback if a new release fails its health check.
-- 🌐 Served through Caddy with HTTPS, working alongside other apps without touching them; Cloudflare supported.
-- 🗝️ Settings come from GitHub secrets/variables.
+- ⚙️ GitHub Actions tests every push; on `main` it builds the frontend and publishes the release with
+  devkit (or by hand: `~/Documentos/devkit/deploy.sh vps HOST`).
+- 🧰 Nothing to install on the server: devkit brings its own Python and runs the app as a user service.
+- ↩️ Automatic rollback if a new release does not stay up or fails `/api/health`.
+- 🌐 HTTPS through the server's shared Caddy, alongside other apps; Cloudflare supported (real visitor
+  IP, Origin Certificate for "Full (strict)").
+- 🗝️ The log salt (`LOG_HASH_SALT`) is generated on the first deploy and kept.
+
+GitHub setup: repository **variable** `DEPLOY_ENABLED=true`, and in the `vars` environment:
+
+| Secret | What |
+|---|---|
+| `DEPLOY_HOST`, `DEPLOY_USER` | the server and the SSH user |
+| `DEPLOY_SSH_KEY` | private key used only for deploys |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan <server>` |
+| `DEPLOY_SITE_ADDRESS` | the app's domain (also a variable) |
+| `DEPLOY_ORIGIN_CERT`, `DEPLOY_ORIGIN_KEY` | optional: Cloudflare Origin Certificate and key (PEM), for SSL "Full (strict)" |
+| `DEPLOY_PATH`, `DEPLOY_PORT` | optional (default: `/srv/storygapboard` and 22) |
+| `DEPLOY_<KEY>` | optional app settings, secret or variable, for the keys of `.env.example` except `LOG_HASH_SALT` (e.g. `DEPLOY_RATE_GENERATE_PER_DAY`) |
+| `DEPLOY_PRESERVE` | optional variable: `true` keeps the values the server already has |
+
+Every deploy writes these settings to the server's `.env`: a key that is not set is removed and
+the app uses its default. With `DEPLOY_PRESERVE=true`, a value the server already has stays, and
+GitHub only fills what is missing or empty. To add a setting, add its line to the `env` input of
+the deploy job in `.github/workflows/ci-cd.yml`.
 
 ## 🛠️ Development
 

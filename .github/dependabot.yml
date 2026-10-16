@@ -6,6 +6,7 @@ updates:
   - package-ecosystem: npm
     directory: /frontend
     schedule: { interval: weekly }
+  # GitHub Actions, inclusive o devkit: todo dia, para versão nova do deploy chegar logo.
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    schedule: { interval: daily }

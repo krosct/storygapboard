@@ -1,0 +1,8 @@
+You are editing ONE panel of a storyboard. Reference image 1 is the panel as it is now. Reference image 2 is the same panel with yellow marks (painted strokes, circles or rectangles) showing WHERE to edit: the yellow is only a pointer, never part of the picture. Make the change below inside the marked area, clearly and visibly: redraw that part completely if needed, and let it grow slightly past the marks when the change needs room (e.g. bigger hair). The result must look obviously different there, not just retouched. Keep everything away from the marks identical: same framing, camera, composition, characters, line work, art style, colors and lighting. Return the whole panel at the same framing, with no yellow marks, borders or text.
+
+The marked area is in the middle left of the panel, spanning about 21-42% of its width (from the left) and 27-44% of its height (from the top).
+
+Change:
+make the robot's head red
+
+Generate the image at resolution tier 1K.

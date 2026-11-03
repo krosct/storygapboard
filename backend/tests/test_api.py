@@ -5,6 +5,7 @@ Run from backend/:  python -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import base64
 import csv
 import json
 import unittest
@@ -23,7 +24,13 @@ class MetaTests(ApiTestCase, unittest.TestCase):
         self.assertEqual(meta["limits"]["max_files"], 5)
         self.assertEqual(meta["limits"]["max_file_bytes"], 5 * 1024 * 1024)
         self.assertIn("16:9", meta["aspect_ratios"])
-        self.assertNotIn("providers", meta)
+        # the visitor picks among well-known panel shapes; the model may still be asked any board ratio
+        self.assertEqual(meta["aspect_ratios"], core.PANEL_RATIOS)
+        self.assertEqual(len(core.PANEL_RATIOS), 10)
+        self.assertIn("5:4", meta["board_ratios"])
+        self.assertNotIn("1:8", meta["aspect_ratios"])
+        self.assertEqual([p["id"] for p in meta["providers"]], ["openrouter", "openai"])
+        self.assertEqual(meta["default_provider"], "openrouter")
 
     def test_docs_and_removed_features_are_absent(self):
         for path in ("/docs", "/redoc", "/openapi.json", "/help", "/api/log", "/api/config",
@@ -71,6 +78,19 @@ class GenerateTests(ApiTestCase, unittest.TestCase):
         self.assertEqual(body["model"], core.DEFAULT_MODEL)
         self.assertNotIn("n", body)  # single image per generation, always
 
+    def test_model_is_always_asked_for_png(self):
+        # the visitor's format is for the download (made in the browser); the model always gets png
+        self.fake.caps = {"output_format": {"type": "enum", "values": ["png", "jpeg", "webp"]}}
+        self.wait_job(self.generate(output_format="jpeg").json()["job_id"])
+        self.assertEqual(self.fake.bodies[0]["output_format"], "png")
+        # a model without png: no format sent, it uses its own default
+        core._CAPS_CACHE.clear()
+        self.fake.caps = {"output_format": {"type": "enum", "values": ["jpeg"]}}
+        self.wait_job(self.generate(output_format="webp").json()["job_id"])
+        self.assertNotIn("output_format", self.fake.bodies[1])
+        row = list(csv.DictReader((self.data_dir / audit.LOG_FILENAME).read_text().splitlines()))[-1]
+        self.assertEqual(row["output_format_req"], "webp")  # the log keeps what the visitor chose
+
     def test_storyboard_instruction_comes_first(self):
         job_id = self.generate(prompt="A cat finds a hat.", layout="2x3").json()["job_id"]
         self.wait_job(job_id)
@@ -82,6 +102,102 @@ class GenerateTests(ApiTestCase, unittest.TestCase):
         self.assertEqual(self.client.get("/api/meta").json()["layouts"], core.LAYOUTS)
         row = list(csv.DictReader((self.data_dir / audit.LOG_FILENAME).read_text().splitlines()))[-1]
         self.assertEqual(row["layout"], "2x3")
+
+    def test_fixed_panels_send_the_layout_guide_first(self):
+        self.fake.caps = {"input_references": {"type": "range", "min": 0, "max": 2}}
+        files = [("files", ("ref.jpg", tiny_png(), "image/png")),
+                 ("files", ("ref2.png", tiny_png(), "image/png")),
+                 ("guide", ("guide.png", tiny_png(6, 4), "image/png"))]
+        job_id = self.generate(files=files, fixed_panels="4,1").json()["job_id"]
+        self.assertEqual(self.wait_job(job_id)["status"], "done")
+        body = self.fake.bodies[0]
+        self.assertIn("Panels 1 and 4 are already finished", body["prompt"])
+        self.assertIn("Panels 2, 3, 5 and 6 are gray numbered placeholders", body["prompt"])
+        self.assertLess(body["prompt"].index("layout guide"), body["prompt"].index("Story:"))
+        # capped at 2 references: the guide (first) is kept
+        guide_b64 = base64.b64encode(tiny_png(6, 4)).decode()
+        self.assertEqual(len(body["input_references"]), 2)
+        self.assertTrue(body["input_references"][0]["image_url"]["url"].endswith(guide_b64))
+        row = list(csv.DictReader((self.data_dir / audit.LOG_FILENAME).read_text().splitlines()))[-1]
+        self.assertEqual((row["mode"], row["fixed_panels"]), ("storyboard", "1 4"))
+
+    def test_fixed_panels_validation(self):
+        guide = [("guide", ("guide.png", tiny_png(), "image/png"))]
+        cases = [
+            (dict(fixed_panels="7"), guide, "fixed panels"),
+            (dict(fixed_panels="0"), guide, "fixed panels"),
+            (dict(fixed_panels="1,x"), guide, "fixed panels"),
+            (dict(fixed_panels="1,2,3,4,5,6"), guide, "at least one panel empty"),
+            (dict(fixed_panels="1"), [], "layout guide"),
+            (dict(fixed_panels="1"), [("guide", ("g.txt", b"hi", "text/plain"))], "layout guide"),
+            (dict(), guide, "layout guide"),
+        ]
+        for fields, files, needle in cases:
+            res = self.generate(files=files, **fields)
+            self.assertEqual(res.status_code, 400, fields)
+            self.assertIn(needle, res.json()["detail"], fields)
+        self.assertEqual(self.fake.bodies, [])
+
+    def test_edit_sends_panel_and_marks(self):
+        self.fake.caps = {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]},
+                          "input_references": {"type": "range", "min": 0, "max": 4}}
+        res = self.edit(prompt="Make the hat red.", area="60,5,95,40", mark_color="green")
+        self.assertEqual(res.status_code, 200, res.text)
+        snap = self.wait_job(res.json()["job_id"])
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertTrue(snap["result"]["filename"].startswith("panel_"))
+        body = self.fake.bodies[0]
+        self.assertTrue(body["prompt"].startswith("You are editing ONE panel of a storyboard."))
+        self.assertIn("with green marks", body["prompt"])
+        self.assertIn("the green is only a pointer", body["prompt"])
+        self.assertNotIn("red marks", body["prompt"])
+        self.assertIn("Change:\nMake the hat red.", body["prompt"])
+        self.assertIn("The marked area is in the top right of the panel, spanning about 60-95%", body["prompt"])
+        self.assertNotIn("storyboard grid", body["prompt"])
+        self.assertEqual(body["aspect_ratio"], "16:9")
+        self.assertEqual(len(body["input_references"]), 2)
+        row = list(csv.DictReader((self.data_dir / audit.LOG_FILENAME).read_text().splitlines()))[-1]
+        self.assertEqual(row["mode"], "edit")
+
+    def test_edit_validation(self):
+        res = self.edit(marked=tiny_png(8, 8))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("same size", res.json()["detail"])
+        res = self.client.post("/api/edit", headers={"X-Api-Key": API_KEY},
+                               files=[("prompt", (None, "x")), ("model", (None, "")),
+                                      ("resolution", (None, "1K")), ("output_format", (None, "png")),
+                                      ("panel", ("p.png", tiny_png(), "image/png"))])
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("marked panel", res.json()["detail"])
+        self.assertEqual(self.edit(prompt=" ").status_code, 400)
+        res = self.edit(mark_color="purple")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("mark color", res.json()["detail"])
+        for area in ("1,2,3", "50,10,40,90", "0,0,101,50", "a,b,c,d"):
+            res = self.edit(area=area)
+            self.assertEqual(res.status_code, 400, area)
+            self.assertIn("marked area", res.json()["detail"])
+        self.assertEqual(self.fake.bodies, [])
+
+    def test_edit_needs_a_model_with_image_input(self):
+        self.fake.caps = {"aspect_ratio": {"type": "enum", "values": ["1:1"]}}
+        snap = self.wait_job(self.edit().json()["job_id"])
+        self.assertEqual(snap["status"], "error")
+        self.assertIn("cannot edit a panel", snap["error"])
+        self.assertEqual(self.fake.bodies, [])
+
+    def test_prompt_is_optional(self):
+        job_id = self.generate(prompt="  ").json()["job_id"]
+        self.assertEqual(self.wait_job(job_id)["status"], "done")
+        sent = self.fake.bodies[0]["prompt"]
+        self.assertIn("Story: none given. Make up a simple, coherent story", sent)
+        guide = [("guide", ("guide.png", tiny_png(), "image/png"))]
+        self.wait_job(self.generate(prompt="", files=guide, fixed_panels="2").json()["job_id"])
+        sent = self.fake.bodies[1]["prompt"]
+        self.assertIn("Infer the story from the finished panels", sent)
+        self.assertIn("Panels 1, 3, 4, 5 and 6 are gray numbered placeholders: draw them", sent)
+        one = core.fixed_panels_instruction("1x3", [1, 3])
+        self.assertIn("Panel 2 is a gray numbered placeholder: draw it so", one)
 
     def test_capability_lookup_keeps_model_slash(self):
         self.wait_job(self.generate(model="meta/muse-image").json()["job_id"])
@@ -126,7 +242,6 @@ class GenerateTests(ApiTestCase, unittest.TestCase):
 
     def test_validation_errors(self):
         cases = [
-            (dict(prompt="  "), "prompt"),
             (dict(prompt="x" * (core.MAX_PROMPT_CHARS + 1)), "too long"),
             (dict(model="bad model!"), "model"),
             (dict(aspect_ratio="7:3"), "aspect ratio"),
@@ -204,6 +319,197 @@ class GenerateTests(ApiTestCase, unittest.TestCase):
         self.wait_job(self.generate(prompt="=HYPERLINK(\"http://x\")").json()["job_id"])
         rows = list(csv.DictReader((self.data_dir / audit.LOG_FILENAME).read_text().splitlines()))
         self.assertTrue(rows[-1]["prompt"].startswith("'="))
+
+
+class OpenAITests(ApiTestCase, unittest.TestCase):
+    """OpenAI Image API: generations (JSON) without input images, edits (multipart) with them."""
+
+    def parts(self, body: bytes) -> list[tuple[str, bytes]]:
+        boundary = body.split(b"\r\n", 1)[0]
+        out = []
+        for chunk in body.split(boundary)[1:-1]:
+            head, _, value = chunk.strip(b"\r\n").partition(b"\r\n\r\n")
+            name = head.split(b'name="', 1)[1].split(b'"', 1)[0].decode()
+            out.append((name, value))
+        return out
+
+    def test_generate_without_images_uses_generations(self):
+        snap = self.wait_job(self.generate(provider="openai", aspect_ratio="16:9", seed="7",
+                                           output_format="jpeg").json()["job_id"])
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual(self.fake.urls[0], core.OPENAI_GENERATIONS_URL)
+        self.assertEqual(self.fake.get_urls, [])  # no OpenRouter capability lookup
+        body = self.fake.bodies[0]
+        self.assertEqual(body["model"], "gpt-image-2.5-flare")
+        self.assertEqual(body["size"], "1360x768")
+        self.assertEqual(body["output_format"], "png")  # explicit, whatever the visitor's download format
+        self.assertNotIn("seed", body)
+        self.assertNotIn("n", body)
+        self.assertNotIn("Generate the image with aspect ratio", body["prompt"])
+        self.assertEqual(len(body["safety_identifier"]), 16)
+        headers = self.fake.headers[0]
+        self.assertEqual(headers["Authorization"], f"Bearer {API_KEY}")
+        self.assertNotIn("X-Title", headers)
+        self.assertIn("OpenAI does not support seeds: it was ignored.", snap["result"]["notes"])
+        row = list(csv.DictReader((self.data_dir / audit.LOG_FILENAME).read_text().splitlines()))[-1]
+        self.assertEqual(row["provider"], "openai")
+
+    def test_images_go_to_edits_as_multipart(self):
+        files = [("files", ("ref.png", tiny_png(), "image/png")),
+                 ("guide", ("guide.png", tiny_png(6, 4), "image/png"))]
+        job_id = self.generate(provider="openai", files=files, fixed_panels="1", model="gpt-image-2").json()["job_id"]
+        self.assertEqual(self.wait_job(job_id)["status"], "done")
+        self.assertEqual(self.fake.urls[0], core.OPENAI_EDITS_URL)
+        self.assertTrue(self.fake.headers[0]["Content-Type"].startswith("multipart/form-data; boundary="))
+        parts = self.parts(self.fake.bodies[0])
+        names = [name for name, _ in parts]
+        self.assertEqual(names.count("image[]"), 2)
+        images = [value for name, value in parts if name == "image[]"]
+        self.assertEqual(images[0], tiny_png(6, 4))  # the layout guide goes first
+        self.assertEqual(dict(parts)["model"], b"gpt-image-2")
+        self.assertIn(b"layout guide", dict(parts)["prompt"])
+
+    def test_retouch_sends_panel_and_marks(self):
+        res = self.edit(provider="openai", mark_color="blue", area="10,10,50,50")
+        snap = self.wait_job(res.json()["job_id"])
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual(self.fake.urls[0], core.OPENAI_EDITS_URL)
+        parts = self.parts(self.fake.bodies[0])
+        self.assertEqual([n for n, _ in parts].count("image[]"), 2)
+        self.assertIn(b"with blue marks", dict(parts)["prompt"])
+        self.assertEqual(dict(parts)["size"], b"1360x768")  # 16:9 panel at 1K
+
+    def test_retouch_keeps_the_exact_panel_shape(self):
+        # a 3:4-ish panel (600x800 would be 3:4; 594x800 is not a listed ratio): no snapping to 3:4
+        res = self.edit(provider="openai", panel=tiny_png(594, 800), marked=tiny_png(594, 800))
+        snap = self.wait_job(res.json()["job_id"])
+        self.assertEqual(snap["status"], "done", snap)
+        size = dict(self.parts(self.fake.bodies[0]))["size"].decode()
+        w, h = (int(n) for n in size.split("x"))
+        self.assertAlmostEqual(w / h, 594 / 800, delta=0.02)
+
+    def test_openai_size(self):
+        for ratio in ("1:1", "16:9", "21:9", "2:3", "9:16"):
+            for tier in ("512", "1K", "2K", "4K"):
+                size, note = core.openai_size(ratio, tier, "gpt-image-2.5-flare")
+                w, h = (int(n) for n in size.split("x"))
+                self.assertEqual((w % 16, h % 16), (0, 0), size)
+                self.assertTrue(655_360 <= w * h <= 8_294_400, size)
+                self.assertLessEqual(max(w, h), 3840, size)
+                self.assertAlmostEqual(w / h, core.parse_ratio(ratio), delta=0.05 * w / h)  # shape kept
+                self.assertIsNone(note)
+        size, note = core.openai_size("8:1", "1K", "gpt-image-2")
+        w, h = (int(n) for n in size.split("x"))
+        self.assertLessEqual(w / h, 3.0)
+        self.assertIn("3:1", note)
+        self.assertEqual(core.openai_size("auto", "1K", "gpt-image-2"), ("auto", None))
+        self.assertEqual(core.openai_size("3:2", "2K", "gpt-image-1.5")[0], "1536x1024")
+        size, note = core.openai_size("21:9", "1K", "gpt-image-1-mini")
+        self.assertEqual(size, "1536x1024")
+        self.assertIn("only makes", note)
+
+    def test_openai_errors(self):
+        cases = [
+            (403, '{"error": {"message": "Your organization must be verified to use the model"}}', "verified"),
+            (401, '{"error": {"message": "Incorrect API key provided"}}', "OpenAI rejected the API key"),
+            (403, '{"error": {"message": "Project does not have access to model gpt-image-2.5-flare"}}',
+             "does not have access to model gpt-image-2.5-flare"),
+            (429, '{"error": {"code": "insufficient_quota", "message": "You exceeded your current quota"}}',
+             "no credits left"),
+            (400, '{"error": {"code": "moderation_blocked", "message": "Request blocked"}}', "content filter"),
+        ]
+        for status, raw, needle in cases:
+            self.fake = FakeOpenRouter(status=status, raw=raw)
+            snap = self.wait_job(self.generate(provider="openai").json()["job_id"])
+            self.assertEqual(snap["status"], "error", raw)
+            self.assertIn(needle, snap["error"], raw)
+
+    def test_no_access_is_not_a_rejected_key(self):
+        # a valid key without access to the model must not lock the visitor out
+        self.rebuild(generate_per_minute=0, auth_failures_before_lock=2)
+        self.fake = FakeOpenRouter(status=403, raw='{"error": {"message": "You do not have access to this model"}}')
+        for _ in range(3):
+            snap = self.wait_job(self.generate(provider="openai").json()["job_id"])
+            self.assertIn("accepted the key but refused", snap["error"])
+            self.assertIn("Provider says: You do not have access to this model", snap["error"])
+        self.assertEqual(self.generate(provider="openai").status_code, 200)
+
+    def test_unknown_provider(self):
+        res = self.generate(provider="gemini")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("provider", res.json()["detail"])
+        self.assertEqual(self.edit(provider="gemini").status_code, 400)
+
+
+class DebugDumpTests(ApiTestCase, unittest.TestCase):
+    """Development only: off by default, never with a PUBLIC_URL, and never keeps the key."""
+
+    def test_off_by_default(self):
+        self.assertFalse(self.client.get("/api/meta").json()["debug"])
+        self.wait_job(self.generate().json()["job_id"])
+        self.assertFalse(any(self.data_dir.glob("debug*")))
+        self.assertEqual(self.client.post("/api/debug/" + "0" * 32).status_code, 404)
+
+    def test_never_with_public_url(self):
+        self.rebuild(debug_dump_dir=self.data_dir / "debug", public_url="https://example.org")
+        self.assertFalse(self.client.get("/api/meta").json()["debug"])
+        self.wait_job(self.generate().json()["job_id"])
+        self.assertFalse((self.data_dir / "debug").exists())
+
+    def test_keeps_request_images_and_answer(self):
+        self.rebuild(debug_dump_dir=self.data_dir / "debug")
+        self.assertTrue(self.client.get("/api/meta").json()["debug"])
+        guide = [("guide", ("guide.png", tiny_png(6, 4), "image/png"))]
+        job_id = self.generate(files=guide, fixed_panels="1", prompt="A cat.").json()["job_id"]
+        self.assertEqual(self.wait_job(job_id)["status"], "done")
+        [folder] = (self.data_dir / "debug").iterdir()
+        info = json.loads((folder / "request.json").read_text())
+        self.assertEqual(info["mode"], "storyboard")
+        self.assertEqual(info["sent"]["url"], core.OPENROUTER_IMAGES_URL)
+        self.assertIn("Story:\nA cat.", (folder / "prompt.txt").read_text())
+        self.assertEqual((folder / "sent" / "0_guide.png").read_bytes(), tiny_png(6, 4))
+        self.assertEqual((folder / "answer.png").read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+        everything = b"".join(f.read_bytes() for f in folder.rglob("*") if f.is_file())
+        self.assertNotIn(API_KEY.encode(), everything)
+        # the browser's side lands in the same folder
+        res = self.client.post(f"/api/debug/{job_id}", files=[
+            ("files", ("board.png", tiny_png(), "image/png")), ("note", (None, '{"shift": [0, 0]}'))])
+        self.assertEqual(res.json(), {"saved": 1})
+        self.assertTrue((folder / "browser" / "board.png").exists())
+        self.assertEqual(self.client.post("/api/debug/" + "1" * 32, files=[("note", (None, "x"))]).status_code, 404)
+
+
+class FakeModelTests(ApiTestCase, unittest.TestCase):
+    """Development only: simulated images, no provider call, never with a PUBLIC_URL."""
+
+    def test_off_by_default(self):
+        self.assertFalse(self.client.get("/api/meta").json()["fake_model"])
+        self.wait_job(self.generate().json()["job_id"])
+        self.assertEqual(len(self.fake.bodies), 1)  # the (patched) provider was called
+
+    def test_never_with_public_url(self):
+        self.rebuild(fake_model=True, public_url="https://example.org")
+        self.assertFalse(self.client.get("/api/meta").json()["fake_model"])
+        self.wait_job(self.generate().json()["job_id"])
+        self.assertEqual(len(self.fake.bodies), 1)
+
+    def test_generate_and_retouch_without_any_provider(self):
+        self.rebuild(fake_model=True)
+        self.assertTrue(self.client.get("/api/meta").json()["fake_model"])
+        job_id = self.generate(aspect_ratio="21:9", layout="1x3").json()["job_id"]
+        snap = self.wait_job(job_id)
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual((snap["result"]["width"], snap["result"]["height"]), (1024, 439))
+        self.assertIn("Fake model", snap["result"]["notes"][0])
+        image = self.client.get(f"/api/jobs/{job_id}/image")
+        self.assertEqual(image.content[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(core.sniff_image(image.content), ("image/png", 1024, 439))
+        snap = self.wait_job(self.edit(panel=tiny_png(30, 40), marked=tiny_png(30, 40)).json()["job_id"])
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual(snap["result"]["width"] / snap["result"]["height"], 768 / 1024)
+        self.assertEqual(self.wait_job(self.generate(key=None).json()["job_id"])["status"], "done")  # no key needed
+        self.assertEqual(self.fake.bodies, [])  # nothing reached any provider
+        self.assertEqual(self.fake.get_urls, [])
 
 
 class AbuseProtectionTests(ApiTestCase, unittest.TestCase):

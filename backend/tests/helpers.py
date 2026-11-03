@@ -43,6 +43,7 @@ class FakeOpenRouter:
         self.bodies: list[dict] = []
         self.headers: list[dict] = []
         self.get_urls: list[str] = []
+        self.urls: list[str] = []
         self.lock = threading.Lock()
 
     def __call__(self, method, url, headers, body, timeout_s, token):
@@ -54,6 +55,7 @@ class FakeOpenRouter:
         with self.lock:
             self.bodies.append(body)
             self.headers.append(headers)
+            self.urls.append(url)
         waited = 0.0
         while waited < self.delay_s:
             token.check()
@@ -104,6 +106,15 @@ class ApiTestCase:
         # (None, value) parts are plain form fields: always multipart, even without files.
         parts = [(name, (None, value)) for name, value in data.items()] + list(files or [])
         return self.client.post("/api/generate", files=parts, headers=headers)
+
+    def edit(self, prompt="make the hat red", panel=None, marked=None, key=API_KEY, **fields):
+        data = {"prompt": prompt, "model": "", "resolution": "1K", "output_format": "png", "seed": ""}
+        data.update(fields)
+        headers = {"X-Api-Key": key} if key is not None else {}
+        parts = [(name, (None, value)) for name, value in data.items()]
+        parts.append(("panel", ("panel.png", panel or tiny_png(16, 9), "image/png")))
+        parts.append(("marked", ("marked.png", marked or tiny_png(16, 9), "image/png")))
+        return self.client.post("/api/edit", files=parts, headers=headers)
 
     def wait_job(self, job_id: str, timeout_s: float = 5.0) -> dict:
         deadline = time.monotonic() + timeout_s

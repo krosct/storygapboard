@@ -2,11 +2,23 @@ version: 2
 updates:
   - package-ecosystem: pip
     directory: /backend
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
+    groups:
+      backend-packages:
+        patterns:
+          - "*"
   - package-ecosystem: npm
     directory: /frontend
-    schedule: { interval: weekly }
-  # GitHub Actions, inclusive o devkit: todo dia, para versão nova do deploy chegar logo.
+    schedule: { interval: monthly }
+    groups:
+      frontend-packages:
+        patterns:
+          - "*"
+  # GitHub Actions, devkit included: weekly, so a new deploy version arrives within a week.
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: daily }
+    schedule: { interval: weekly }
+    groups:
+      actions-packages:
+        patterns:
+          - "*"

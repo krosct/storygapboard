@@ -12,6 +12,16 @@
 
 .noscript { color: #fff; text-align: center; padding: 2rem; }
 
+/* Dark native controls everywhere: scrollbars (page, lists, the open list of a select), checkboxes... */
+:root { color-scheme: dark; }
+html { scrollbar-color: rgba(255, 255, 255, 0.35) transparent; }
+
+/* <button> does not inherit the font (the template only sets it on inputs): same look as the links/inputs */
+button { font-family: inherit; }
+/* action rows wrap instead of running past the article; rows marked .fixed stay side by side on
+   phones too (the template stacks every other row full width below 480px) */
+ul.actions { flex-wrap: wrap; row-gap: 0.75rem; }
+
 .hint {
   font-size: 0.8rem;
   line-height: 1.6;
@@ -34,6 +44,7 @@
 .summary-line a { border-bottom-style: dotted; }
 .summary-line a.key-set { color: #b5e8bf; }
 .summary-line a.key-missing { color: #f5b5af; }
+.summary-line .fake-model { color: #ffd48a; font-weight: 600; }
 
 .ratio-preview { flex: none; }
 .ratio-preview rect { fill: rgba(255, 255, 255, 0.18); stroke: rgba(255, 255, 255, 0.8); stroke-width: 1; stroke-dasharray: 3 2; }
@@ -77,7 +88,332 @@
 @keyframes sgb-spin { to { transform: rotate(360deg); } }
 
 .result .image.main { margin-bottom: 0.75rem; }
+.result > h2.major { margin-top: 1rem; }
+.result .hint.board-help { margin-bottom: 1.75rem; }
+/* icon-only actions (undo, redo, open): square, glyph centered */
+#main article .icon-only {
+  width: 2.75rem;
+  padding: 0;
+  text-align: center;
+  font-size: 0.9rem;
+  letter-spacing: 0;
+}
+#main article .icon-only:before { margin: 0; line-height: inherit; }
+/* the retouch window lives outside the article: same icon buttons there */
+.modal .icon-only { width: 2.75rem; padding: 0; text-align: center; font-size: 0.9rem; letter-spacing: 0; }
+.modal .icon-only:before, .modal .tool-btn:before { margin: 0; line-height: inherit; }
+.modal .tool-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+  line-height: 2.25rem;
+  padding: 0;
+  text-align: center;
+  font-size: 0.85rem;
+  letter-spacing: 0;
+}
 .result .image.main img { max-height: 70vh; object-fit: contain; background: rgba(0, 0, 0, 0.25); }
+
+/* Panels: the layout as boxes; an image in a box is copied as-is */
+.panel-grid-block { margin: 0 0 1.5rem 0; }
+.panel-grid {
+  display: grid;
+  gap: 0.4rem;
+}
+.panel-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: dashed 1px rgba(255, 255, 255, 0.45);
+  border-radius: 3px;
+  overflow: hidden;
+  transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out;
+}
+.panel-cell.is-fixed { border-style: solid; border-color: rgba(255, 255, 255, 0.8); }
+.panel-cell.is-over { background-color: rgba(255, 255, 255, 0.1); border-color: #ffffff; }
+/* the image as it goes into the storyboard; drag it to move the framing */
+.panel-cell img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.panel-cell img:active { cursor: grabbing; }
+.panel-cell img:focus-visible { outline: solid 2px #ffd48a; outline-offset: -2px; }
+.panel-number {
+  position: absolute;
+  top: 0.15rem;
+  left: 0.35rem;
+  z-index: 1;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+}
+.panel-add {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 1.1;
+  color: rgba(255, 255, 255, 0.75);
+}
+.panel-add-plus { font-size: 1.2rem; }
+.panel-add-text { font-size: 0.6rem; letter-spacing: 0.1rem; text-transform: uppercase; white-space: nowrap; }
+/* small panels (e.g. 1:8, or a narrow phone): just the "+", the button keeps its aria-label */
+.panel-cell.is-compact .panel-add-text { display: none; }
+.panel-cell.is-compact .panel-number { top: 0.05rem; left: 0.2rem; }
+.panel-cell.is-compact .panel-remove { width: 1rem; height: 1rem; line-height: 0.95rem; font-size: 0.8rem; top: 0.05rem; right: 0.05rem; }
+.panel-cell { container-type: inline-size; }
+@container (max-width: 3.3rem) {
+  .panel-add-text { display: none; }
+}
+.panel-add:hover, .panel-add:focus-visible { color: #ffffff; }
+.panel-remove {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.15rem;
+  z-index: 1;
+  width: 1.4rem;
+  height: 1.4rem;
+  line-height: 1.3rem;
+  text-align: center;
+  cursor: pointer;
+  border-radius: 50%;
+  background: rgba(27, 31, 34, 0.85);
+  font-size: 1rem;
+}
+.panel-remove:hover, .panel-remove:focus-visible { background: #ff9b94; color: #1b1f22; }
+[aria-disabled="true"].panel-add, [aria-disabled="true"].panel-remove { cursor: default; opacity: 0.5; }
+
+/* Result board: drag a panel to move its framing; pencil = retouch, arrow = download */
+.board { position: relative; margin-bottom: 0.75rem; line-height: 0; }
+.board img { display: block; width: 100%; height: auto; }
+.board-cell {
+  position: absolute;
+  overflow: hidden;
+  outline: none;
+  touch-action: none;
+  transition: box-shadow 0.15s ease-in-out;
+}
+.board-cell.is-movable { cursor: grab; }
+.board-cell.is-dragging { cursor: grabbing; }
+/* while a panel is held: only the image, no label, buttons or hover frame */
+.board-cell.is-dragging, .board-cell.is-dragging:hover { box-shadow: none; }
+.board-cell.is-dragging .board-cell-label,
+.board-cell.is-dragging .board-cell-actions { opacity: 0 !important; transition: none; pointer-events: none; }
+.board { user-select: none; -webkit-user-select: none; }
+html.is-panning, html.is-panning * { user-select: none !important; -webkit-user-select: none !important; cursor: grabbing !important; }
+.board-cell:hover, .board-cell:focus-visible { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85); }
+.board-cell:focus-visible { box-shadow: inset 0 0 0 2px #ffd48a; }
+.board-cell.is-editing { box-shadow: inset 0 0 0 3px #ffd48a; }
+/* live framing while dragging, over the panel until the redrawn board arrives */
+.board-live { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.board-cell-label {
+  position: absolute;
+  left: 0.4rem;
+  bottom: 0.4rem;
+  line-height: 1.4;
+  font-size: 0.65rem;
+  letter-spacing: 0.1rem;
+  text-transform: uppercase;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  background: rgba(27, 31, 34, 0.85);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease-in-out;
+}
+.board-cell-actions {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  display: flex;
+  gap: 0.3rem;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+}
+.board-cell:hover .board-cell-label, .board-cell:focus-within .board-cell-label,
+.board-cell.is-editing .board-cell-label,
+.board-cell:hover .board-cell-actions, .board-cell:focus-within .board-cell-actions { opacity: 1; }
+/* touch screens have no hover: keep the buttons visible */
+@media (hover: none) { .board-cell-actions { opacity: 1; } }
+.board-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  border-bottom: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  background: rgba(27, 31, 34, 0.85);
+  color: #ffffff;
+}
+.board-btn:hover, .board-btn:focus-visible { background: #ffffff; color: #1b1f22; outline: none; }
+.board-btn[aria-disabled="true"] { opacity: 0.4; cursor: default; }
+.board-btn.icon:before { line-height: 1; }
+
+/* Panel retouch editor (in a modal) */
+.editor-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.modal .editor-tools select { width: auto; min-width: 9.5rem; height: 2rem; font-size: 0.8rem; padding: 0 2rem 0 0.6rem; background-size: 1rem; background-position: calc(100% - 0.5rem) center; }
+/* brush button + its thickness menu (drops below it) */
+.brush-tool { position: relative; display: inline-flex; }
+.modal .brush-tool .tool-btn { position: relative; }
+/* the current thickness, under the brush icon */
+.brush-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 0.3rem;
+  width: 1rem;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: currentColor;
+}
+.brush-badge.size-small { height: 1px; }
+.brush-badge.size-medium { height: 2px; }
+.brush-badge.size-large { height: 4px; }
+.brush-sizes {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  gap: 0.3rem;
+  padding: 0.35rem;
+  border-radius: 4px;
+  background: #2a2f33;
+  box-shadow: 0 0.5rem 1.25rem rgba(0, 0, 0, 0.5);
+}
+.brush-size {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+}
+.brush-size:hover { background: rgba(255, 255, 255, 0.12); }
+.brush-size.is-on { background: #ffffff; }
+.brush-size:focus-visible { outline: solid 2px #ffd48a; outline-offset: 2px; }
+.brush-line { display: block; width: 1.3rem; border-radius: 999px; background: #ffffff; transform: rotate(-35deg); }
+.brush-size.is-on .brush-line { background: #1b1f22; }
+.size-small .brush-line { height: 2px; }
+.size-medium .brush-line { height: 5px; }
+.size-large .brush-line { height: 9px; }
+.mark-colors { display: inline-flex; gap: 0.4rem; align-items: center; margin-left: 0.25rem; }
+.mark-color {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+}
+.mark-color.is-on { box-shadow: 0 0 0 2px #1b1f22, 0 0 0 4px #ffffff; }
+.mark-color:focus-visible { outline: solid 2px #ffd48a; outline-offset: 3px; }
+.editor-stage { position: relative; display: flex; justify-content: center; margin-bottom: 1rem; }
+.editor-canvas {
+  display: block;
+  /* auto size keeps the panel's shape, so pointer math matches the drawing */
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 50vh;
+  cursor: crosshair;
+  touch-action: none;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.25);
+}
+.editor-stage.is-running .editor-canvas { cursor: progress; opacity: 0.55; }
+.editor-progress {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: "Courier New", monospace;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+.editor-progress .spinner { width: 2rem; height: 2rem; border-width: 3px; }
+.editor-fields { display: flex; flex-wrap: wrap; gap: 0 1rem; }
+.editor-fields .field { flex: 1 1 14rem; margin-bottom: 0.75rem; }
+/* labels close to their field (the template's gap is meant for long forms) */
+.modal .editor-fields label { margin-bottom: 0.4rem; }
+.modal .run-strip { margin-bottom: 0.5rem; min-height: 1.5rem; }
+.modal .actions { margin-bottom: 0; }
+
+/* In-page modal (never browser dialogs) */
+html.has-modal, html.has-modal body { overflow: hidden; }
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(19, 21, 25, 0.75);
+}
+.modal {
+  width: min(44rem, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  padding: 1.5rem 1.75rem;
+  background: #1b1f22;
+  border-radius: 4px;
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.6);
+  outline: none;
+  text-align: left;
+  /* dark scrollbar, like the rest of the page */
+  color-scheme: dark;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+.modal::-webkit-scrollbar { width: 0.5rem; }
+.modal::-webkit-scrollbar-track { background: transparent; }
+.modal::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.35); border-radius: 0.25rem; }
+.modal.is-small { width: min(28rem, 100%); }
+.modal.is-small p { margin-bottom: 1.25rem; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.5rem; }
+.modal-head h3 { margin: 0; }
+.modal-close {
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+.modal-close:hover, .modal-close:focus-visible { color: #ffffff; }
+.modal-close[aria-disabled="true"] { opacity: 0.4; cursor: default; }
+.modal .hint { margin-bottom: 1rem; }
+.modal input.btn-cancel, .modal button.btn-cancel {
+  background-color: rgba(255, 140, 130, 0.08);
+  box-shadow: inset 0 0 0 1px #f0b4ae;
+  color: #ffd3cf !important;
+}
+@media screen and (max-width: 480px) {
+  .modal { padding: 1.25rem 1rem; }
+}
 
 /* Compact options row: Ratio, Layout, Size, Format, Seed (tighter gutter than the template's) */
 #main article form > .fields.options {
@@ -127,11 +463,11 @@
 #main article input.btn-cancel:hover { background-color: rgba(255, 140, 130, 0.16); }
 #main article input.btn-cancel:active { background-color: rgba(255, 140, 130, 0.24); }
 
-#main article input.btn-sound { box-shadow: none; font-weight: 600; }
-#main article input.btn-sound.is-on { background-color: #f4c430; color: #1b1f22 !important; }
-#main article input.btn-sound.is-on:hover { background-color: #f7d258; }
-#main article input.btn-sound.is-off { background-color: #7a6014; color: #f1e2b3 !important; }
-#main article input.btn-sound.is-off:hover { background-color: #8a6d18; }
+#main article .btn-sound { box-shadow: none; font-weight: 600; }
+#main article .btn-sound.is-on { background-color: #f4c430; color: #1b1f22 !important; }
+#main article .btn-sound.is-on:hover { background-color: #f7d258; }
+#main article .btn-sound.is-off { background-color: #7a6014; color: #f1e2b3 !important; }
+#main article .btn-sound.is-off:hover { background-color: #8a6d18; }
 
 /* Files */
 .dropzone {

@@ -106,7 +106,7 @@ export default function FilesArticle({ meta, files, setFiles, notify }: Props) {
         </div>
       )}
 
-      <ul className="actions">
+      <ul className="actions fixed">
         <li><a className="button primary" href="#generate">Done</a></li>
         {files.length > 0 && (
           <li><button type="button" onClick={() => { setFiles([]); setProblems([]) }}>Remove all</button></li>

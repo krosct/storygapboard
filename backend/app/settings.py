@@ -47,5 +47,13 @@ class Settings:
     # Finished jobs (and their image) are dropped after this many seconds.
     job_ttl_s: int = field(default_factory=lambda: _int("JOB_TTL_S", 900))
     max_stored_jobs: int = field(default_factory=lambda: _int("MAX_STORED_JOBS", 64))
-    # Whole request body cap (5 files x 5 MB + form fields + multipart overhead).
-    max_body_bytes: int = 27 * 1024 * 1024
+    # Development only: keep every job's request, images and raw answer in this folder (off when
+    # empty, and ignored whenever PUBLIC_URL is set, as on the server). See app/debugdump.py.
+    debug_dump_dir: Path | None = field(default_factory=lambda: (
+        Path(os.environ["DEBUG_DUMP_DIR"]) if os.environ.get("DEBUG_DUMP_DIR", "").strip() else None))
+    # Development only: a simulated image model (no provider is called, nothing is spent), to try
+    # the whole flow for free. Ignored whenever PUBLIC_URL is set, as on the server. See app/fakemodel.py.
+    fake_model: bool = field(default_factory=lambda: (
+        os.environ.get("DEBUG_FAKE_MODEL", "").strip().lower() in ("1", "true", "yes", "on")))
+    # Whole request body cap (5 files + layout guide x 5 MB + form fields + multipart overhead).
+    max_body_bytes: int = 32 * 1024 * 1024

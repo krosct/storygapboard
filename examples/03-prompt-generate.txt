@@ -1,0 +1,8 @@
+You are a storyboard artist. Create ONE single image: a storyboard grid with exactly 1 row and 3 columns (3 panels in total, 1 x 3). Panels are equal in size, fill the whole image edge to edge with no borders, gutters or margins between them, and read left to right, top to bottom. Each panel shows the next moment of the story below, keeping the same characters, style and setting across panels. Use the context and reference images, if any, for characters and style. No captions, speech bubbles or panel numbers unless the story asks for them.
+
+The FIRST reference image is the layout guide of this storyboard: the same grid, panels numbered 1 to 3 left to right, top to bottom. Panels 1 and 3 are already finished: reproduce them exactly as they appear in the guide, in the same place. Panel 2 is a gray numbered placeholder: draw it so the story flows through the finished panels, matching their characters, art style, colors and lighting. Never draw the gray placeholders or their numbers.
+
+Story:
+Pip the robot finds a tiny sprout, waters it at noon, and at night it has bloomed.
+
+Generate the image at resolution tier 1K.

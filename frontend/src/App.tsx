@@ -6,7 +6,8 @@ import GenerateArticle from './articles/GenerateArticle'
 import FilesArticle from './articles/FilesArticle'
 import ModelArticle from './articles/ModelArticle'
 import AboutArticle from './articles/AboutArticle'
-import { loadPrefs, savePrefs, type Prefs } from './prefs'
+import { loadPrefs, savePrefs, type Prefs, type Provider } from './prefs'
+import type { Panels } from './board'
 
 const ARTICLES = ['generate', 'files', 'model', 'about'] as const
 const NAV: { id: (typeof ARTICLES)[number]; label: string }[] = [
@@ -22,8 +23,13 @@ export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs)
   // Ephemeral by design: the key and the files live only in this tab's memory.
-  const [apiKey, setApiKey] = useState('')
+  // one key per provider, so switching back and forth keeps both (still memory only)
+  const [apiKeys, setApiKeys] = useState<Record<Provider, string>>({ openrouter: '', openai: '' })
+  const apiKey = apiKeys[prefs.provider]
+  const setApiKey = (value: string) => setApiKeys((old) => ({ ...old, [prefs.provider]: value }))
+  const modelKey = prefs.provider === 'openai' ? 'openaiModel' : 'model'
   const [files, setFiles] = useState<File[]>([])
+  const [panels, setPanels] = useState<Panels>([])
   const [prompt, setPrompt] = useState('')
 
   useEffect(() => {
@@ -76,8 +82,8 @@ export default function App() {
           <div className="content">
             <div className="inner">
               <h1>Story<span className="gap">Gap</span>Board</h1>
-              <p>Turn a short story and your own references into a complete storyboard.<br />
-                Bring your own key and create!</p>
+              <p>Turn a few images into a complete storyboard.{' '}<br />
+                Bring your own key and create stories!</p>
             </div>
           </div>
           <nav className="use-middle">
@@ -96,13 +102,14 @@ export default function App() {
             <GenerateArticle
               meta={meta} prefs={prefs} updatePrefs={updatePrefs}
               prompt={prompt} setPrompt={setPrompt}
-              apiKey={apiKey} files={files} notify={notify}
+              apiKey={apiKey} files={files} panels={panels} setPanels={setPanels} notify={notify}
             />)}
           {article('files', 'Files',
             <FilesArticle meta={meta} files={files} setFiles={setFiles} notify={notify} />)}
           {article('model', 'Model',
             <ModelArticle
-              meta={meta} model={prefs.model} setModel={(model) => updatePrefs({ model })}
+              meta={meta} provider={prefs.provider} setProvider={(provider) => updatePrefs({ provider })}
+              model={prefs[modelKey]} setModel={(model) => updatePrefs({ [modelKey]: model })}
               apiKey={apiKey} setApiKey={setApiKey}
             />)}
           {article('about', 'About', <AboutArticle meta={meta} />)}

@@ -1,4 +1,6 @@
 version: 2
+# Minor and patch updates come grouped, one PR per ecosystem; each major update gets its own PR,
+# so a breaking one never holds back the safe ones.
 updates:
   - package-ecosystem: pip
     directory: /backend
@@ -7,6 +9,9 @@ updates:
       backend-packages:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: npm
     directory: /frontend
     schedule: { interval: monthly }
@@ -14,6 +19,9 @@ updates:
       frontend-packages:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
   # GitHub Actions, devkit included: weekly, so a new deploy version arrives within a week.
   - package-ecosystem: github-actions
     directory: /
@@ -22,3 +30,6 @@ updates:
       actions-packages:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch

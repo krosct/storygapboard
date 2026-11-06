@@ -1,5 +1,7 @@
 // Non-secret preferences remembered in this browser. The API key, prompt and
 // files are never stored.
+import { DEFAULT_FRAME, sanitizeFrame, type FrameStyle } from './frame'
+
 export type Provider = 'openrouter' | 'openai'
 
 export interface Prefs {
@@ -13,10 +15,12 @@ export interface Prefs {
   resolution: string
   outputFormat: string
   muted: boolean
+  /** the storyboard's look (Frame tab); the title is never remembered */
+  frame: FrameStyle
 }
 
 const KEY = 'storygapboard.prefs'
-const DEFAULTS: Prefs = { provider: 'openrouter', model: '', openaiModel: '', aspectRatio: '1:1', layout: '2x3', resolution: '1K', outputFormat: 'png', muted: false }
+const DEFAULTS: Prefs = { provider: 'openrouter', model: '', openaiModel: '', aspectRatio: '1:1', layout: '2x3', resolution: '1K', outputFormat: 'png', muted: false, frame: DEFAULT_FRAME }
 
 export function loadPrefs(): Prefs {
   try {
@@ -32,6 +36,7 @@ export function loadPrefs(): Prefs {
       resolution: typeof data.resolution === 'string' ? data.resolution : DEFAULTS.resolution,
       outputFormat: typeof data.outputFormat === 'string' ? data.outputFormat : DEFAULTS.outputFormat,
       muted: data.muted === true,
+      frame: { ...sanitizeFrame(data.frame), title: '' },
     }
   } catch {
     return DEFAULTS
@@ -40,7 +45,7 @@ export function loadPrefs(): Prefs {
 
 export function savePrefs(prefs: Prefs): void {
   try {
-    window.localStorage.setItem(KEY, JSON.stringify(prefs))
+    window.localStorage.setItem(KEY, JSON.stringify({ ...prefs, frame: { ...prefs.frame, title: '' } }))
   } catch {
     /* private mode or storage blocked: preferences just are not remembered */
   }

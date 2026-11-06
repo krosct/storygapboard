@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { bitmapOf, drawSource, framingRoom, type PanelSource, type Rect } from '../board'
+import { bitmapOf, drawSource, framingRoom, previewBoard, type PanelSource, type Rect } from '../board'
+import { PLAIN_FRAME } from '../frame'
 
 interface Props {
-  url: string
+  layout: string
   width: number
   height: number
   rects: Rect[]
+  /** panel corner radius, px of the board */
+  radius: number
   sources: PanelSource[]
   editing: number | null
   running: boolean
-  onRetouch: (index: number) => void
-  onDownload: (index: number) => void
+  /** `from` = where the panel is on screen: the retouch window grows out of it */
+  onRetouch: (index: number, from: DOMRect) => void
   /** new framing of one panel (0..1 like CSS object-position) */
   onFrame: (index: number, x: number, y: number) => void
 }
@@ -30,7 +33,12 @@ interface Drag {
 
 // The final board: drag a panel to move its framing (the whole board is redrawn
 // when you let go; while dragging, a canvas over the panel shows it live). Each
-// panel has two small buttons: retouch and download.
+// panel has a small retouch button.
+/** On-screen box of the panel a control belongs to. */
+function cellRect(el: HTMLElement): DOMRect {
+  return (el.closest('.board-cell') ?? el).getBoundingClientRect()
+}
+
 export default function BoardView(p: Props) {
   const [drag, setDrag] = useState<Drag | null>(null)
   const dragRef = useRef<Drag | null>(null)
@@ -45,7 +53,6 @@ export default function BoardView(p: Props) {
 
   // The live canvas stays over the panel until the redrawn board arrives.
   const [overlay, setOverlay] = useState<number | null>(null)
-  useEffect(() => { setOverlay(null) }, [p.url])
 
   function paint(d: Drag, x: number, y: number) {
     const el = live.current
@@ -133,10 +140,23 @@ export default function BoardView(p: Props) {
     p.onFrame(index, clamp(s.x + step[0]), clamp(s.y + step[1]))
   }
 
+  // The board is painted on a canvas from the panels' sources (no <img>, no file, no URL in the page) and
+  // the save/drag gestures are blocked: the file is only offered in the Download tab. A deterrent, not a
+  // lock (screenshots, devtools). It is the plain board: the Frame tab's customizations are not applied here.
+  const pic = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const el = pic.current
+    if (!el) return
+    let alive = true
+    const geometry = { layout: p.layout, width: p.width, height: p.height, rects: p.rects, radius: p.radius }
+    void previewBoard(el, geometry, p.sources, PLAIN_FRAME, 1600).catch(() => undefined).then(() => { if (alive) setOverlay(null) })
+    return () => { alive = false }
+  }, [p.layout, p.width, p.height, p.rects, p.radius, p.sources])
+
   const pct = (v: number, total: number) => `${(v / total) * 100}%`
   return (
-    <div className="board">
-      <img src={p.url} alt="Generated storyboard" />
+    <div className="board" onContextMenu={(e) => e.preventDefault()} onDragStart={(e) => e.preventDefault()}>
+      <canvas ref={pic} className="board-pic" role="img" aria-label="Generated storyboard" />
       {p.rects.map((rect, i) => {
         const [roomX, roomY] = framingRoom(p.sources[i], rect.w, rect.h)
         const movable = roomX >= 1 || roomY >= 1
@@ -144,7 +164,8 @@ export default function BoardView(p: Props) {
           <span key={i} tabIndex={p.running ? -1 : 0}
             className={`board-cell${movable ? ' is-movable' : ''}${p.editing === i ? ' is-editing' : ''}${drag?.index === i || pressed === i ? ' is-dragging' : ''}`}
             aria-label={`Panel ${i + 1}${movable ? ': drag or use the arrow keys to move its framing' : ''}`}
-            style={{ left: pct(rect.x, p.width), top: pct(rect.y, p.height), width: pct(rect.w, p.width), height: pct(rect.h, p.height) }}
+            style={{ left: pct(rect.x, p.width), top: pct(rect.y, p.height), width: pct(rect.w, p.width), height: pct(rect.h, p.height),
+              borderRadius: p.radius ? `${(p.radius / p.width) * 100}cqw` : undefined }}
             onPointerDown={(e) => void onDown(e, i)} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
             // Chrome starts a text selection from the mousedown, not the pointerdown
             onMouseDown={(e) => { if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'CANVAS') e.preventDefault() }}
@@ -154,12 +175,8 @@ export default function BoardView(p: Props) {
             <span className="board-cell-actions" onPointerDown={(e) => e.stopPropagation()}>
               <span className="board-btn icon solid fa-pencil-alt" role="button" tabIndex={p.running ? -1 : 0}
                 aria-label={`Retouch panel ${i + 1}`} title="Retouch this panel" aria-disabled={p.running}
-                onClick={() => { if (!p.running) p.onRetouch(i) }}
-                onKeyDown={(e) => { if (!p.running && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); p.onRetouch(i) } }} />
-              <span className="board-btn icon solid fa-download" role="button" tabIndex={0}
-                aria-label={`Download panel ${i + 1}`} title="Download this panel"
-                onClick={() => p.onDownload(i)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); p.onDownload(i) } }} />
+                onClick={(e) => { if (!p.running) p.onRetouch(i, cellRect(e.currentTarget)) }}
+                onKeyDown={(e) => { if (!p.running && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); p.onRetouch(i, cellRect(e.currentTarget)) } }} />
             </span>
           </span>
         )

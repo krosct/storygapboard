@@ -12,6 +12,8 @@ export interface Meta {
   debug?: boolean
   /** development fake model on: no provider is called, no key needed (never in production) */
   fake_model?: boolean
+  /** address for bug reports and feedback (optional) */
+  contact_email?: string
   /** panel shapes the visitor picks from (the Ratio option) */
   aspect_ratios: string[]
   /** ratios the whole image may be asked in (planGeneration picks one) */

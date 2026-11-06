@@ -9,25 +9,18 @@ retouch any detail of one panel without touching the rest. Visitors use their ow
 
 ## ✨ Features
 
-- ✍️ **Generate**: optional story (leave it empty and the model completes the story from your panels),
-  layout (1x3, 1x6, 2x1, 2x2, 2x3, 3x1, 3x2), panel ratio (the shape of each frame: 1:1, 4:3, 3:4, 3:2,
-  2:3, 4:5, 16:9, 9:16, 21:9 or auto), size, download format and seed.
-- 🧩 **Panels**: the layout as boxes, in the chosen panel shape. Drop your own image in some of them (drag
-  it to pick the framing when its shape differs): it goes into the storyboard exactly as shown and the
-  model draws the empty ones.
-- 🖼️ **The storyboard**: every panel in the exact chosen shape, with a margin and a thin frame. Drag any
-  panel to move its framing (also the ones the model drew), download a single panel, undo/redo, and a
-  new generation asks before replacing the current one.
-- 🖌️ **Retouch**: the pencil on a panel opens it. Mark the detail with a circle, a rectangle or the brush
-  (thin, medium or thick), in a mark color that stands out on that panel, and say what to change. A live
-  preview darkens what stays and lights what may change (only the marks, around them, or the whole
-  panel). The answer is lined up and blended in the browser, so nothing else changes. Undo and redo per
-  panel.
-- 🤖 **Model**: OpenRouter or OpenAI, the image model and your key for it.
-- 📎 **Files**: up to 5 files (5 MB each).
-  - 📝 `.txt` / `.md` → story context
-  - 🎨 PNG / JPEG / WebP / GIF → visual references
-- ℹ️ **About**: how it works, privacy and fair use.
+- ✍️ **Generate**: optional story (empty = the model completes it from your panels), layout (1x3 to 3x2),
+  panel ratio, size, format and seed.
+- 🧩 **Panels**: the layout as boxes; drop your own image in some (drag to frame it) and the model draws
+  the rest.
+- 🖼️ **Storyboard**: every panel in the chosen shape. Drag to reframe, download one panel, undo/redo.
+- 🎨 **Frame**: dress the storyboard: 12 ready-made looks, background (color, gradients, patterns), margin and
+  gaps, outer frame, title, and each panel's border (color, line style, thickness), rounded corners, shadow and
+  number badge. Live preview; the storyboard follows every change.
+- 🖌️ **Retouch**: mark a detail (circle, rectangle or brush), say what to change; only that area is
+  blended in, in the browser. Undo/redo per panel, and a draggable divider compares before and after.
+- 🤖 **Model**: OpenRouter or OpenAI, with your key. 📎 **Files**: up to 5 (5 MB each): `.txt`/`.md` as
+  context, PNG/JPEG/WebP/GIF as references.
 
 🧭 **How it works**: the full pipeline (diagrams and every step with an example) and a walkthrough with
 real files in [examples/](examples/README.md).
@@ -67,31 +60,16 @@ builds the frontend and serves the app. The generation log goes to `./data`.
 
 ## 📦 Deploy
 
-- ⚙️ GitHub Actions tests every push; on `main` it builds the frontend and publishes the release with
-  devkit (or by hand: `~/Documentos/devkit/deploy.sh vps HOST`).
-- 🧰 Nothing to install on the server: devkit brings its own Python and runs the app as a user service.
-- ↩️ Automatic rollback if a new release does not stay up or fails `/api/health`.
-- 🌐 HTTPS through the server's shared Caddy, alongside other apps; Cloudflare supported (real visitor
-  IP, Origin Certificate for "Full (strict)").
-- 🗝️ The log salt (`LOG_HASH_SALT`) is generated on the first deploy and kept.
+GitHub Actions tests every push; on `main` it builds and publishes with devkit (or by hand:
+`~/Documentos/devkit/deploy.sh vps HOST`), with health check, automatic rollback and HTTPS through the
+server's shared Caddy (Cloudflare supported).
 
-GitHub setup: repository **variable** `DEPLOY_ENABLED=true`, and in the `vars` environment:
-
-| Secret | What |
-|---|---|
-| `DEPLOY_HOST`, `DEPLOY_USER` | the server and the SSH user |
-| `DEPLOY_SSH_KEY` | private key used only for deploys |
-| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan <server>` |
-| `DEPLOY_SITE_ADDRESS` | the app's domain (also a variable) |
-| `DEPLOY_ORIGIN_CERT`, `DEPLOY_ORIGIN_KEY` | optional: Cloudflare Origin Certificate and key (PEM), for SSL "Full (strict)" |
-| `DEPLOY_PATH`, `DEPLOY_PORT` | optional (default: `/srv/storygapboard` and 22) |
-| `DEPLOY_<KEY>` | optional app settings, secret or variable, for the keys of `.env.example` except `LOG_HASH_SALT` (e.g. `DEPLOY_RATE_GENERATE_PER_DAY`) |
-| `DEPLOY_PRESERVE` | optional variable: `true` keeps the values the server already has |
-
-Every deploy writes these settings to the server's `.env`: a key that is not set is removed and
-the app uses its default. With `DEPLOY_PRESERVE=true`, a value the server already has stays, and
-GitHub only fills what is missing or empty. To add a setting, add its line to the `env` input of
-the deploy job in `.github/workflows/ci-cd.yml`.
+Setup: repository **variable** `DEPLOY_ENABLED=true`, and in the `vars` environment `DEPLOY_HOST`,
+`DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SITE_ADDRESS`; optional `DEPLOY_PATH`,
+`DEPLOY_PORT`, `DEPLOY_ORIGIN_CERT`/`DEPLOY_ORIGIN_KEY`, `DEPLOY_PRESERVE` and `DEPLOY_<KEY>` for the
+settings of `.env.example` (add new ones to the `env` input of the deploy job in
+`.github/workflows/ci-cd.yml`). Each deploy rewrites the server's `.env` from them; with
+`DEPLOY_PRESERVE=true` existing server values stay. `LOG_HASH_SALT` is generated once and kept.
 
 ## 🛠️ Development
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { api, ApiError, formatBytes, type JobResult, type Meta } from '../api'
 import type { Notify, ToastKind } from '../components/Toasts'
 import RatioPreview from '../components/RatioPreview'
@@ -8,10 +8,15 @@ import { buildMask } from '../marks'
 import BoardView from '../components/BoardView'
 import Modal from '../components/Modal'
 import {
-  applySourceEdit, blobExt, canvasToBlob, composeBoard, composeGuide, cropPanel, panelCount, planGeneration,
-  renderBoard, type PanelSource, type Panels, type Rect,
+  applySourceEdit, blobExt, canvasToBlob, composeBoard, composeGuide, panelCount, planGeneration,
+  renderBoard, renderPanel, restyleGeometry, type BoardGeometry, type PanelSource, type Panels,
 } from '../board'
 import type { Prefs } from '../prefs'
+import { PLAIN_FRAME, sameFrame, type FrameStyle } from '../frame'
+import TabBar from '../components/TabBar'
+import FrameTab from '../components/FrameTab'
+import FullView from '../components/FullView'
+import WaitButton from '../components/WaitButton'
 
 interface Props {
   meta: Meta | null
@@ -27,18 +32,16 @@ interface Props {
 }
 
 /** One version of the storyboard (the first generation, then one per retouch; moving a framing updates it in place). */
-interface Board {
+interface Board extends BoardGeometry {
   blob: Blob
   url: string
-  width: number
-  height: number
-  /** where each panel sits on the board */
-  rects: Rect[]
   /** where each panel takes its pixels from (and how it is framed) */
   sources: PanelSource[]
   filename: string
   cost: number
   seed: number | null
+  /** the frame style it was drawn with */
+  frame: FrameStyle
 }
 
 /** Retouches kept per panel for undo. */
@@ -123,8 +126,26 @@ export default function GenerateArticle(p: Props) {
   const [seed, setSeed] = useState('')
   const [board, setBoard] = useState<Board | null>(null)
   const [history, setHistory] = useState<History>(() => emptyHistory(0))
-  const [editing, setEditing] = useState<{ index: number; panel: HTMLCanvasElement } | null>(null)
+  const [editing, setEditing] = useState<{ index: number; panel: HTMLCanvasElement; from?: DOMRect } | null>(null)
   const [confirmReplace, setConfirmReplace] = useState(false)
+  const [tab, setTab] = useState<'generate' | 'frame' | 'board' | 'download'>('generate')
+  const [fullView, setFullView] = useState(false)
+  // what the visitor asked to download: the share notice (with a 5 s wait) comes first
+  const [pendingDownload, setPendingDownload] = useState<{ label: string; run: () => void } | null>(null)
+  // the panel as it was before its latest retouch (to compare in the retouch window); framing = the current one
+  const [beforePanel, setBeforePanel] = useState<HTMLCanvasElement | null>(null)
+  const beforeSource = editing ? history.undo[editing.index]?.at(-1) : undefined
+  const editingPanel = editing?.panel
+  useEffect(() => {
+    const at = editingRef.current?.index
+    const rect = at === undefined ? undefined : latestBoard.current?.rects[at]
+    const current = at === undefined ? undefined : latestBoard.current?.sources[at]
+    if (!beforeSource || !rect || !current) { setBeforePanel(null); return }
+    let alive = true
+    void renderPanel({ ...beforeSource, x: current.x, y: current.y }, rect.w, rect.h)
+      .then((el) => { if (alive) setBeforePanel(el) }, () => { if (alive) setBeforePanel(null) })
+    return () => { alive = false }
+  }, [beforeSource, editingPanel])
   const editingRef = useRef(editing)
   editingRef.current = editing
   const jobId = useRef<string | null>(null)
@@ -152,6 +173,9 @@ export default function GenerateArticle(p: Props) {
   // the latest state for queued work (board redraws are chained, see `queue`)
   const latestBoard = useRef<Board | null>(null)
   latestBoard.current = board
+  const frame = p.prefs.frame
+  const frameRef = useRef(frame)
+  frameRef.current = frame
   const latestHistory = useRef(history)
   latestHistory.current = history
   const cells = Array.from({ length: panelCount(layout) }, (_, i) => p.panels[i] ?? null)
@@ -263,7 +287,7 @@ export default function GenerateArticle(p: Props) {
       setStatus({ kind: 'error', text: 'Leave at least one panel empty for the model to draw.' })
       return
     }
-    const snapshot = { plan, cells: [...cells], format: outputFormat }
+    const snapshot = { plan, cells: [...cells], format: outputFormat, frame }
     setEditing(null)
     await runJob(async () => {
       const guide = fixedPanels.length ? await composeGuide(plan, cells) : null
@@ -272,22 +296,23 @@ export default function GenerateArticle(p: Props) {
         resolution, outputFormat, seed: seed.trim(), files: p.files, apiKey: p.apiKey.trim(), fixedPanels, guide,
       })
     }, 'Generating…', async (blob, info, id) => {
-      const layout = await composeBoard(blob, snapshot.plan, snapshot.cells)
-      const composed = await renderBoard(layout, layout.sources, snapshot.format)
+      const layout = await composeBoard(blob, snapshot.plan, snapshot.cells, snapshot.frame)
+      const composed = await renderBoard(layout, layout.sources, snapshot.format, snapshot.frame)
       debugSave(id, [{ name: 'board.png', blob: composed }], {
         plan: snapshot.plan, board: { width: layout.width, height: layout.height }, rects: layout.rects,
         // where each panel was taken from (generated ones: the cell cut from the model's answer)
         sources: layout.sources.map((src, i) => ({ panel: i + 1, own: snapshot.cells[i] !== null, rect: src.rect })),
       })
-      showBoard(boardFrom(composed, info.filename, { ...layout, cost: info.cost, seed: info.seed }),
+      showBoard(boardFrom(composed, info.filename, { ...layout, frame: snapshot.frame, cost: info.cost, seed: info.seed }),
         emptyHistory(layout.rects.length))
+      setTab('board')
     })
   }
 
-  async function openEditor(index: number) {
+  async function openEditor(index: number, from?: DOMRect) {
     if (!board || running) return
     try {
-      setEditing({ index, panel: await cropPanel(board.blob, board.rects[index]) })
+      setEditing({ index, panel: await renderPanel(board.sources[index], board.rects[index].w, board.rects[index].h), from })
       setStatus(null)   // the window shows its own progress; the last run's message does not apply
     } catch (e) {
       setStatus({ kind: 'error', text: (e as Error).message })
@@ -312,7 +337,7 @@ export default function GenerateArticle(p: Props) {
       const blended = await applySourceEdit(base.sources[index], rect.w, rect.h, blob, edit.mask,
         buildMask(edit.shapes, rect.w, rect.h, 'loose'))
       sources[index] = blended.source
-      const next = boardFrom(await renderBoard(base, sources, outputFormat), base.filename,
+      const next = boardFrom(await renderBoard(base, sources, outputFormat, base.frame), base.filename,
         { ...base, sources, cost: base.cost + info.cost })
       // this panel's history: the source before, a fresh redo; the others are untouched
       const h = latestHistory.current
@@ -327,7 +352,7 @@ export default function GenerateArticle(p: Props) {
         redo: h.redo.map((list, i) => (i === index ? [] : list)),
         redoOrder: h.redoOrder.filter((v) => v !== index),
       })
-      const panelAfter = await cropPanel(next.blob, next.rects[index])
+      const panelAfter = await renderPanel(next.sources[index], next.rects[index].w, next.rects[index].h)
       setEditing({ index, panel: panelAfter })
       debugSave(id, [
         { name: 'mask.png', blob: await canvasToBlob(edit.mask, 'png') },
@@ -355,19 +380,38 @@ export default function GenerateArticle(p: Props) {
       const restored = from[from.length - 1]
       const sources = [...base.sources]
       sources[index] = { ...restored, x: current.x, y: current.y }
-      const next = boardFrom(await renderBoard(base, sources, outputFormat), base.filename, { ...base, sources })
+      const next = boardFrom(await renderBoard(base, sources, outputFormat, base.frame), base.filename, { ...base, sources })
       const popped = (lists: PanelSource[][]) => lists.map((list, i) => (i === index ? list.slice(0, -1) : list))
       const pushed = (lists: PanelSource[][]) => lists.map((list, i) => (i === index ? [...list, current] : list))
       showBoard(next, back
         ? { undo: popped(h.undo), redo: pushed(h.redo), order: dropLast(h.order, index), redoOrder: [...h.redoOrder, index] }
         : { undo: pushed(h.undo), redo: popped(h.redo), order: [...h.order, index], redoOrder: dropLast(h.redoOrder, index) })
-      if (editingRef.current?.index === index) setEditing({ index, panel: await cropPanel(next.blob, next.rects[index]) })
+      if (editingRef.current?.index === index) setEditing({ index, panel: await renderPanel(next.sources[index], next.rects[index].w, next.rects[index].h) })
     })
   }
 
   // storyboard-wide: the latest retouch, whatever the panel
   const undoLatest = () => { const i = history.order.at(-1); if (i !== undefined && !running) void stepPanel(i, true) }
   const redoLatest = () => { const i = history.redoOrder.at(-1); if (i !== undefined && !running) void stepPanel(i, false) }
+
+  // A new frame style (Frame tab) redraws the board around the same panels: no model call, not a retouch.
+  const boardStyle = board?.frame
+  // the Storyboard tab shows the panels without the Frame customizations
+  const plain = useMemo(() => (board ? restyleGeometry(board, PLAIN_FRAME) : null), [board?.layout, board?.rects[0]?.w, board?.rects[0]?.h])
+  useEffect(() => {
+    if (!boardStyle || sameFrame(boardStyle, frame)) return
+    const timer = window.setTimeout(() => {
+      void queue(async () => {
+        const base = latestBoard.current
+        const style = frameRef.current
+        if (!base || sameFrame(base.frame, style)) return
+        const geometry = restyleGeometry(base, style)
+        showBoard(boardFrom(await renderBoard(geometry, base.sources, outputFormat, style), base.filename,
+          { ...base, ...geometry, frame: style }))
+      })
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [frame, boardStyle])
 
   // Moving a framing redraws the current board in place (no model call, not a retouch).
   function onFrame(index: number, x: number, y: number) {
@@ -376,7 +420,7 @@ export default function GenerateArticle(p: Props) {
       if (!base) return
       const sources = [...base.sources]
       sources[index] = { ...sources[index], x, y }
-      showBoard(boardFrom(await renderBoard(base, sources, outputFormat), base.filename, { ...base, sources }))
+      showBoard(boardFrom(await renderBoard(base, sources, outputFormat, base.frame), base.filename, { ...base, sources }))
     })
   }
 
@@ -398,7 +442,7 @@ export default function GenerateArticle(p: Props) {
   async function downloadPanel(index: number) {
     if (!board) return
     try {
-      const blob = await canvasToBlob(await cropPanel(board.blob, board.rects[index]), outputFormat)
+      const blob = await canvasToBlob(await renderPanel(board.sources[index], board.rects[index].w, board.rects[index].h), outputFormat)
       saveBlob(blob, `${board.filename.replace(/\.[a-z]+$/, '')}_panel-${index + 1}.${blobExt(blob)}`)
     } catch (e) {
       setStatus({ kind: 'error', text: (e as Error).message })
@@ -415,10 +459,18 @@ export default function GenerateArticle(p: Props) {
     }
   }
 
+  type TabId = 'generate' | 'frame' | 'board' | 'download'
+  const tabs: [TabId, string][] = [['generate', 'Generate'], ...(board ? [['board', 'Storyboard'], ['frame', 'Frame'], ['download', 'Download']] as [TabId, string][] : [])]
+  const active: TabId = tab !== 'generate' && !board ? 'generate' : tab
+  const tabIndex = tabs.findIndex(([id]) => id === active)
   const fileCount = p.files.length
   const fixedCount = cells.filter(Boolean).length
   return (
-    <form onSubmit={onSubmit} noValidate>
+    <>
+      <TabBar tabs={tabs} active={active} onSelect={setTab} />
+      <div className="tab-viewport">
+      <div className="tab-track" style={{ transform: `translateX(-${tabIndex * 100}%)` }}>
+      <form onSubmit={onSubmit} noValidate className={`tab-pane${active === 'generate' ? '' : ' is-off'}`} id="tab-generate" role="tabpanel" aria-hidden={active !== 'generate'}>
       <div className="fields">
         <div className="field">
           <label htmlFor="prompt">Prompt (optional)</label>
@@ -503,20 +555,19 @@ export default function GenerateArticle(p: Props) {
         {status && <span className={`status status-${status.kind}`}>{status.text}</span>}
       </div>
 
-      {board && (
-        <div className="result">
-          <h2 className="major">StoryGaplessBoard</h2>
-          <BoardView url={board.url} width={board.width} height={board.height} rects={board.rects}
+      </form>
+      {board && plain && (
+        <div className={`tab-pane result${active === 'board' ? '' : ' is-off'}`} id="tab-board" role="tabpanel" aria-hidden={active !== 'board'}>
+          <BoardView layout={board.layout} width={plain.width} height={plain.height} rects={plain.rects} radius={plain.radius}
             sources={board.sources} editing={editing?.index ?? null} running={running}
-            onRetouch={(i) => void openEditor(i)} onDownload={(i) => void downloadPanel(i)} onFrame={onFrame} />
+            onRetouch={(i, from) => void openEditor(i, from)} onFrame={onFrame} />
           <p className="hint">
             {board.width}×{board.height} · {formatBytes(board.blob.size)}
             {board.cost > 0 && <> · ${board.cost.toFixed(4)}</>}
             {board.seed !== null && <> · seed {board.seed}</>}
             {history.order.length > 0 && <> · {history.order.length} retouch{history.order.length > 1 ? 'es' : ''}</>}
           </p>
-          <p className="hint board-help">Drag a panel to move its framing. On each panel: the pencil retouches a detail,
-            the arrow downloads that panel alone.</p>
+          <p className="hint board-help">Drag a panel to move its framing.<br />On each panel: the pencil retouches a detail.</p>
 
           {confirmReplace && (
             <Modal title="Replace the storyboard?" busy={false} small onClose={() => setConfirmReplace(false)}>
@@ -524,16 +575,12 @@ export default function GenerateArticle(p: Props) {
               <ul className="actions fixed">
                 <li><button type="button" className="primary" onClick={() => void generate()}>Generate</button></li>
                 <li><button type="button" onClick={() => setConfirmReplace(false)}>Cancel</button></li>
-                <li>
-                  <a className="button icon-only icon solid fa-download" href={board.url} download={board.filename}
-                    aria-label="Download the current storyboard first" title="Download the current storyboard first" />
-                </li>
               </ul>
             </Modal>
           )}
 
           {editing && (
-            <PanelEditor key={editing.index} number={editing.index + 1} panel={editing.panel}
+            <PanelEditor key={editing.index} number={editing.index + 1} panel={editing.panel} before={beforePanel} from={editing.from}
               running={running} elapsed={elapsed} status={status} maxChars={maxChars}
               canUndo={(history.undo[editing.index]?.length ?? 0) > 0}
               canRedo={(history.redo[editing.index]?.length ?? 0) > 0}
@@ -551,15 +598,59 @@ export default function GenerateArticle(p: Props) {
               <button type="button" className="icon-only icon solid fa-redo" aria-label="Redo retouch" title="Redo retouch"
                 disabled={running || history.redoOrder.length === 0} onClick={redoLatest} />
             </li>
-            <li>
-              <a className="button icon-only icon solid fa-eye" href={board.url} target="_blank" rel="noopener noreferrer"
-                aria-label="Open full size" title="Open full size" />
-            </li>
-            <li><a className="button primary icon solid fa-download" href={board.url} download={board.filename}>Download</a></li>
           </ul>
-          <p className="hint">Images are never saved on the server (only held briefly in memory): download it before closing this tab.</p>
         </div>
       )}
-    </form>
+      {board && (
+        <div className={`tab-pane${active === 'frame' ? '' : ' is-off'}`} id="tab-frame" role="tabpanel" aria-hidden={active !== 'frame'}>
+          <FrameTab style={frame} onChange={(next) => p.updatePrefs({ frame: next })}
+            layout={layout} aspectRatio={aspectRatio} board={board} />
+        </div>
+      )}
+      {board && (
+        <div className={`tab-pane${active === 'download' ? '' : ' is-off'}`} id="tab-download" role="tabpanel" aria-hidden={active !== 'download'}>
+          <div className="download-section">
+            <label>Preview</label>
+            <ul className="actions fixed">
+              <li>
+                <button type="button" className="icon-only icon solid fa-eye" aria-label="Open full size" title="Open full size"
+                  onClick={() => setFullView(true)} />
+              </li>
+            </ul>
+          </div>
+          <div className="download-section">
+            <label>Download</label>
+            <ul className="actions fixed">
+              {board.rects.map((_, i) => (
+                <li key={i}>
+                  <button type="button" className="primary icon solid fa-download" aria-label={`Download panel ${i + 1}`}
+                    title={`Download panel ${i + 1}`} onClick={() => setPendingDownload({ label: `panel ${i + 1}`, run: () => void downloadPanel(i) })}>{i + 1}</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <ul className="actions fixed">
+            <li><button type="button" className="primary icon solid fa-download" onClick={() => setPendingDownload({ label: 'full storyboard', run: () => saveBlob(board.blob, board.filename) })}>Full</button></li>
+          </ul>
+          {pendingDownload && (
+            <Modal title={`Download ${pendingDownload.label}`} busy={false} small className="share-modal" onClose={() => setPendingDownload(null)}>
+              <p className="share-note">Liked it? <strong>Share the site</strong> with your friends and acquaintances.</p>
+              <p className="share-note">Found a bug or have a suggestion?{' '}
+                {p.meta?.contact_email
+                  ? <><strong>Send us an email</strong> at <a href={`mailto:${p.meta.contact_email}`}>{p.meta.contact_email}</a>.</>
+                  : <><strong>Send us an email.</strong></>}</p>
+              <p className="share-note"><strong>Thank you</strong> for using StoryGapBoard!</p>
+              <hr />
+              <div className="wait-row">
+                <WaitButton seconds={5} onClick={() => { pendingDownload.run(); setPendingDownload(null) }}>Download</WaitButton>
+              </div>
+            </Modal>
+          )}
+          {fullView && <FullView url={board.url} onClose={() => setFullView(false)} />}
+        </div>
+      )}
+      </div>
+      </div>
+    </>
   )
 }

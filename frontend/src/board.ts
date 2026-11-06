@@ -3,6 +3,8 @@
 // its source: a cell of the model's answer or the visitor's own image, framed and
 // movable; margins and frames) and the masked blend of a retouched panel.
 
+import { drawFrame, frameGeometry, type FrameGeometry, type FrameStyle } from './frame'
+
 export interface Rect { x: number; y: number; w: number; h: number }
 
 /** A visitor's own panel: the image and its framing (0..1 like CSS object-position, 0.5 = centered). */
@@ -172,35 +174,30 @@ function visibleWindow(source: PanelSource, w: number, h: number): Rect {
   return { x: rect.x + (rect.w - sw) * source.x, y: rect.y + (rect.h - sh) * source.y, w: sw, h: sh }
 }
 
-const PAPER = '#ffffff'
-const INK = '#1b1f22'
+export type BoardGeometry = FrameGeometry
 
-/** Final board geometry: panels of the same size with a margin around and between them. */
-function boardGeometry(layout: string, panelW: number, panelH: number): BoardGeometry {
-  const [rows, cols] = parseLayout(layout)
-  const gap = Math.max(6, Math.round(Math.min(panelW, panelH) * 0.04))
-  const rects = Array.from({ length: rows * cols }, (_, i) => ({
-    x: gap + (i % cols) * (panelW + gap),
-    y: gap + Math.floor(i / cols) * (panelH + gap),
-    w: panelW,
-    h: panelH,
-  }))
-  return { width: cols * panelW + (cols + 1) * gap, height: rows * panelH + (rows + 1) * gap, rects }
+/** The same board with another frame style (panel size and layout stay). */
+export function restyleGeometry(g: BoardGeometry, style: FrameStyle): BoardGeometry {
+  const [rows, cols] = parseLayout(g.layout)
+  return frameGeometry(g.layout, rows, cols, g.rects[0].w, g.rects[0].h, style)
 }
-
-/** Thin dark frame just outside each panel (a white gap alone vanishes on white drawings). */
-function drawFrames(ctx: CanvasRenderingContext2D, rects: Rect[]) {
-  const line = Math.max(1, Math.round(Math.min(rects[0].w, rects[0].h) * 0.004))
-  ctx.strokeStyle = INK
-  ctx.lineWidth = line
-  for (const r of rects) ctx.strokeRect(r.x - line / 2, r.y - line / 2, r.w + line, r.h + line)
-}
-
-export interface BoardGeometry { width: number; height: number; rects: Rect[] }
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' }
 
 export function canvasToBlob(el: HTMLCanvasElement, format: string): Promise<Blob> {
+  if (format === 'jpeg') {
+    // JPEG has no transparency (it would turn black): flatten onto white first
+    const flat = document.createElement('canvas')
+    flat.width = el.width
+    flat.height = el.height
+    const c = flat.getContext('2d')
+    if (c) {
+      c.fillStyle = '#ffffff'
+      c.fillRect(0, 0, flat.width, flat.height)
+      c.drawImage(el, 0, 0)
+      el = flat
+    }
+  }
   return new Promise((resolve, reject) => {
     el.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not encode the image.'))),
       MIME[format] ?? 'image/png', 0.92)
@@ -335,7 +332,7 @@ function inset(rect: Rect): Rect {
  * in the preview. renderBoard draws it.
  */
 export async function composeBoard(generated: Blob, plan: Plan,
-  panels: Panels): Promise<BoardGeometry & { sources: PanelSource[] }> {
+  panels: Panels, style: FrameStyle): Promise<BoardGeometry & { sources: PanelSource[] }> {
   const img = await bitmapOf(generated)
   const total = panelCount(plan.layout)
   const cells = detectCells(img, plan.genLayout)
@@ -350,25 +347,52 @@ export async function composeBoard(generated: Blob, plan: Plan,
     const own = await bitmapOf(panel.file)
     return { image: panel.file, rect: { x: 0, y: 0, w: own.width, h: own.height }, x: panel.x, y: panel.y }
   }))
-  return { ...boardGeometry(plan.layout, panelW, panelH), sources }
+  const [rows, cols] = parseLayout(plan.layout)
+  return { ...frameGeometry(plan.layout, rows, cols, panelW, panelH, style), sources }
 }
 
-/** Draw the board: white paper, every panel from its source, thin frames. */
-export async function renderBoard(geometry: BoardGeometry, sources: PanelSource[], format: string): Promise<Blob> {
+/** Draw the board: the frame style around every panel, each from its source. */
+export async function renderBoard(geometry: BoardGeometry, sources: PanelSource[], format: string,
+  style: FrameStyle): Promise<Blob> {
   const [el, ctx] = canvas(geometry.width, geometry.height)
-  ctx.fillStyle = PAPER
-  ctx.fillRect(0, 0, el.width, el.height)
-  for (let i = 0; i < sources.length; i++) drawSource(ctx, await bitmapOf(sources[i].image), sources[i], geometry.rects[i])
-  drawFrames(ctx, geometry.rects)
+  const bitmaps = await Promise.all(sources.map((src) => bitmapOf(src.image)))
+  drawFrame(ctx, geometry, style, (i, rect) => drawSource(ctx, bitmaps[i], sources[i], rect))
   return canvasToBlob(el, format)
 }
 
-/** One panel of the board, as its own canvas. */
-export async function cropPanel(board: Blob, rect: Rect): Promise<HTMLCanvasElement> {
-  const img = await loadImage(board)
-  const [el, ctx] = canvas(rect.w, rect.h)
-  ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h)
-  img.close()
+/**
+ * A small version of the board for the Frame tab: the real panels when there are some, else numbered
+ * placeholders. `maxWidth` = canvas width in px.
+ */
+export async function previewBoard(el: HTMLCanvasElement, geometry: BoardGeometry, sources: PanelSource[] | null,
+  style: FrameStyle, maxWidth: number): Promise<void> {
+  const bitmaps = sources ? await Promise.all(sources.map((src) => bitmapOf(src.image))) : null
+  const scale = Math.min(1, maxWidth / geometry.width)
+  el.width = Math.max(1, Math.round(geometry.width * scale))
+  el.height = Math.max(1, Math.round(geometry.height * scale))
+  const ctx = el.getContext('2d')
+  if (!ctx) return
+  ctx.setTransform(scale, 0, 0, scale, 0, 0)
+  drawFrame(ctx, geometry, style, (i, rect) => {
+    if (bitmaps && sources) { drawSource(ctx, bitmaps[i], sources[i], rect); return }
+    const g = ctx.createLinearGradient(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h)
+    const hue = (i * 47 + 200) % 360
+    g.addColorStop(0, `hsl(${hue}, 45%, 62%)`)
+    g.addColorStop(1, `hsl(${(hue + 40) % 360}, 50%, 38%)`)
+    ctx.fillStyle = g
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)'
+    ctx.font = `700 ${Math.min(rect.w, rect.h) * 0.4}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(i + 1), rect.x + rect.w / 2, rect.y + rect.h / 2)
+  })
+}
+
+/** A panel as one source draws it (its own framing), as a canvas of the panel's size. */
+export async function renderPanel(source: PanelSource, w: number, h: number): Promise<HTMLCanvasElement> {
+  const [el, ctx] = canvas(w, h)
+  drawSource(ctx, await bitmapOf(source.image), source, { x: 0, y: 0, w, h })
   return el
 }
 

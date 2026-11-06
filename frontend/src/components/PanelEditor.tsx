@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { canvasToBlob } from '../board'
 import {
   BLENDS, BRUSHES, buildMask, drawMarks, MARK_COLORS, markArea, pickMarkColor, type Blend, type MarkColor, type Shape,
 } from '../marks'
-import Modal from './Modal'
+import Modal, { ModalCloseButton } from './Modal'
 
 export interface PanelEdit {
   panel: Blob
@@ -19,7 +19,11 @@ export interface PanelEdit {
 
 interface Props {
   number: number
+  /** the panel's box on screen: the window grows out of it */
+  from?: DOMRect
   panel: HTMLCanvasElement
+  /** the panel before its latest retouch: when there is one, a divider compares it with the current one */
+  before?: HTMLCanvasElement | null
   running: boolean
   elapsed: number
   status: { kind: string; text: string } | null
@@ -48,6 +52,24 @@ export default function PanelEditor(p: Props) {
     document.addEventListener('pointerdown', away)
     return () => document.removeEventListener('pointerdown', away)
   }, [sizesOpen])
+  // before/after divider: what is left of the line is the version before the latest retouch
+  const [split, setSplit] = useState(50)
+  const stage = useRef<HTMLDivElement>(null)
+  const beforeView = useRef<HTMLCanvasElement>(null)
+  const splitting = useRef(false)
+  const moveSplit = (clientX: number) => {
+    const box = view.current?.getBoundingClientRect()
+    if (box && box.width) setSplit(Math.min(100, Math.max(0, ((clientX - box.left) / box.width) * 100)))
+  }
+  const onSplitKey = (e: KeyboardEvent) => {
+    const step = e.shiftKey ? 10 : 2
+    if (e.key === 'ArrowLeft') setSplit((v) => Math.max(0, v - step))
+    else if (e.key === 'ArrowRight') setSplit((v) => Math.min(100, v + step))
+    else if (e.key === 'Home') setSplit(0)
+    else if (e.key === 'End') setSplit(100)
+    else return
+    e.preventDefault()
+  }
   const [shapes, setShapes] = useState<Shape[]>([])
   const [draft, setDraft] = useState<Shape | null>(null)
   const [instruction, setInstruction] = useState('')
@@ -57,6 +79,17 @@ export default function PanelEditor(p: Props) {
   // mirrors draft for the pointer handlers (state updaters must stay pure)
   const draftRef = useRef<Shape | null>(null)
   const changeDraft = (next: Shape | null) => { draftRef.current = next; setDraft(next) }
+
+  const before = p.before
+  // a new retouch starts the comparison from the middle again
+  useEffect(() => { setSplit(50) }, [before])
+  useEffect(() => {
+    const el = beforeView.current
+    const ctx = el?.getContext('2d')
+    if (!el || !ctx || !before) return
+    ctx.clearRect(0, 0, el.width, el.height)
+    ctx.drawImage(before, 0, 0, el.width, el.height)
+  }, [before, panel])
 
   // A new version of the panel (after a retouch or an undo): start from clean marks.
   useEffect(() => { setShapes([]); changeDraft(null) }, [panel])
@@ -134,7 +167,7 @@ export default function PanelEditor(p: Props) {
 
   const ready = shapes.length > 0 && instruction.trim().length > 0 && !running
   return (
-    <Modal title={`Retouch panel ${number}`} busy={running} onClose={p.onClose}>
+    <Modal title={`Retouch panel ${number}`} busy={running} onClose={p.onClose} from={p.from}>
       <p className="hint">Mark it, say what to change: only the lit part changes.</p>
       <div className="editor-tools">
         {([
@@ -182,10 +215,30 @@ export default function PanelEditor(p: Props) {
           ))}
         </span>
       </div>
-      <div className={`editor-stage${running ? ' is-running' : ''}`}>
-        <canvas ref={view} className="editor-canvas" width={panel.width} height={panel.height}
-          aria-label={`Panel ${number}: draw on it to mark the area to change`}
-          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
+      <div ref={stage} className={`editor-stage${running ? ' is-running' : ''}`}>
+        <div className="editor-wrap">
+          <canvas ref={view} className="editor-canvas" width={panel.width} height={panel.height}
+            aria-label={`Panel ${number}: draw on it to mark the area to change`}
+            onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
+          {before && (
+            <>
+              <canvas ref={beforeView} className="editor-before" width={panel.width} height={panel.height} aria-hidden="true"
+                style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }} />
+              <span className="compare-tag is-before" style={{ opacity: split > 14 ? 1 : 0 }}>Before</span>
+              <span className="compare-tag is-after" style={{ opacity: split < 86 ? 1 : 0 }}>Now</span>
+              <span className="compare-divider" style={{ left: `${split}%` }} role="slider" tabIndex={0}
+                aria-label="Compare before and after the latest retouch" aria-orientation="horizontal"
+                aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(split)}
+                aria-valuetext={`${Math.round(split)}% before`}
+                onKeyDown={onSplitKey}
+                onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); splitting.current = true; moveSplit(e.clientX) }}
+                onPointerMove={(e) => { if (splitting.current) moveSplit(e.clientX) }}
+                onPointerUp={() => { splitting.current = false }} onPointerCancel={() => { splitting.current = false }}>
+                <span className="compare-handle icon solid fa-arrows-alt-h" aria-hidden="true" />
+              </span>
+            </>
+          )}
+        </div>
         {running && (
           <div className="editor-progress" aria-hidden="true">
             <span className="spinner" />
@@ -225,7 +278,7 @@ export default function PanelEditor(p: Props) {
           <button type="button" className="icon-only icon solid fa-redo" aria-label="Redo this panel's retouch"
             title="Redo this panel's retouch" disabled={running || !p.canRedo} onClick={p.onRedo} />
         </li>
-        <li><button type="button" disabled={running} onClick={p.onClose}>Done</button></li>
+        <li><ModalCloseButton disabled={running}>Done</ModalCloseButton></li>
       </ul>
     </Modal>
   )

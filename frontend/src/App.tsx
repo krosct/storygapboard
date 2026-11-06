@@ -53,14 +53,14 @@ export default function App() {
     })
   }, [])
 
-  const article = (id: string, title: string, children: ReactNode) => (
+  const article = (id: string, title: string | null, children: ReactNode) => (
     <article
       id={id}
       hidden={view.shown !== id}
       className={view.shown === id && view.active ? 'active' : ''}
       onClick={(e) => e.stopPropagation()}
     >
-      <h2 className="major">{title}</h2>
+      {title !== null && <h2 className="major">{title}</h2>}
       {children}
       {/* a div like the template's: its CSS styles every <button> as a big box */}
       <div className="close" role="button" tabIndex={0} aria-label="Close" onClick={view.close}
@@ -98,7 +98,8 @@ export default function App() {
         </header>
 
         <div id="main" hidden={!articleOpen}>
-          {article('generate', 'Generate',
+          {article('generate', null,   // GenerateArticle draws its own title: it becomes tabs once a storyboard exists
+
             <GenerateArticle
               meta={meta} prefs={prefs} updatePrefs={updatePrefs}
               prompt={prompt} setPrompt={setPrompt}

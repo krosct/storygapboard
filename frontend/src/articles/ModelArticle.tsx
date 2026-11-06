@@ -68,8 +68,9 @@ export default function ModelArticle({ meta, provider, setProvider, model, setMo
             <input id="api-key" type={reveal ? 'text' : 'password'} value={apiKey} maxLength={512}
               autoComplete="off" spellCheck={false} placeholder={guide.key}
               onChange={(e) => setApiKey(e.target.value)} />
-            <button type="button" className="small" aria-pressed={reveal}
-              onClick={() => setReveal(!reveal)}>{reveal ? 'Hide' : 'Show'}</button>
+            <button type="button" className={`icon-only icon solid ${reveal ? 'fa-eye-slash' : 'fa-eye'}`} aria-pressed={reveal}
+              aria-label={reveal ? 'Hide the key' : 'Show the key'} title={reveal ? 'Hide the key' : 'Show the key'}
+              onClick={() => setReveal(!reveal)} />
           </div>
           <p className={`hint ${hasKey ? 'ok' : ''}`}>
             {hasKey ? 'Key set for this tab. ' : ''}
@@ -79,7 +80,7 @@ export default function ModelArticle({ meta, provider, setProvider, model, setMo
           </p>
         </div>
       </div>
-      <ul className="actions">
+      <ul className="actions fixed done-row">
         <li><input type="submit" className="primary" value="Done" /></li>
       </ul>
     </form>

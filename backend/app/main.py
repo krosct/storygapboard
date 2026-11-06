@@ -125,6 +125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "debug": debug.enabled,
             # development fake model on: no provider is called (the UI says so)
             "fake_model": fake_model,
+            "contact_email": settings.contact_email,
             "limits": {
                 "max_files": core.MAX_UPLOAD_FILES,
                 "max_file_bytes": core.MAX_UPLOAD_BYTES,

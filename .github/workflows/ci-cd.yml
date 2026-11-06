@@ -134,6 +134,7 @@ jobs:
           # App settings (.env on the server), each from a secret or variable DEPLOY_<KEY>. An
           # unset one is removed from the server's .env and the app uses its default.
           env: |
+            CONTACT_EMAIL=${{ secrets.DEPLOY_CONTACT_EMAIL || vars.DEPLOY_CONTACT_EMAIL }}
             RATE_API_PER_MINUTE=${{ secrets.DEPLOY_RATE_API_PER_MINUTE || vars.DEPLOY_RATE_API_PER_MINUTE }}
             RATE_GENERATE_PER_MINUTE=${{ secrets.DEPLOY_RATE_GENERATE_PER_MINUTE || vars.DEPLOY_RATE_GENERATE_PER_MINUTE }}
             RATE_GENERATE_PER_DAY=${{ secrets.DEPLOY_RATE_GENERATE_PER_DAY || vars.DEPLOY_RATE_GENERATE_PER_DAY }}

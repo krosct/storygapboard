@@ -29,6 +29,8 @@ class Settings:
         os.environ.get("FRONTEND_DIST", str(BACKEND_DIR.parent / "frontend" / "dist"))))
     # Public site URL, sent to OpenRouter as HTTP-Referer (optional).
     public_url: str = field(default_factory=lambda: os.environ.get("PUBLIC_URL", "").strip())
+    # Address shown to visitors for bug reports and feedback (optional; the UI hides the link when unset).
+    contact_email: str = field(default_factory=lambda: os.environ.get("CONTACT_EMAIL", "").strip())
     # Salt for the hashed client/key ids in the log. Random per process when unset,
     # so set it in production to correlate abuse across restarts.
     log_hash_salt: str = field(default_factory=lambda: (

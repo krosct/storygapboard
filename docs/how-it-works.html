@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  Source of frontend/public/how-it-works.pdf (2 A4 pages, linked from the About page).
+  Visual language copied from the site (template colors, Source Sans Pro, Font Awesome 5, thin lines).
+  Diagrams: Mermaid, rendered in the browser, pinned to 12.2.0 (not the newest release on purpose).
+  Regenerate: open this file in Chrome with the Mermaid script loaded, then Print > Save as PDF,
+  background graphics on, margins none, scale 100%, then copy it to frontend/public/how-it-works.pdf.
+  Fonts and images are relative to this folder (frontend/node_modules must be installed for the font).
+-->
+<title>StoryGapBoard · How it works</title>
+<link rel="stylesheet" href="../frontend/src/template/assets/css/fontawesome-all.min.css">
+<style>
+@font-face { font-family: "Source Sans Pro"; font-weight: 300; src: url("../frontend/node_modules/@fontsource/source-sans-pro/files/source-sans-pro-latin-300-normal.woff2") format("woff2"); }
+@font-face { font-family: "Source Sans Pro"; font-weight: 400; src: url("../frontend/node_modules/@fontsource/source-sans-pro/files/source-sans-pro-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Source Sans Pro"; font-weight: 600; src: url("../frontend/node_modules/@fontsource/source-sans-pro/files/source-sans-pro-latin-600-normal.woff2") format("woff2"); }
+
+@page { size: A4; margin: 0; }
+:root {
+  --ink: #ffffff;
+  --muted: rgba(255, 255, 255, 0.72);
+  --line: rgba(255, 255, 255, 0.5);
+  --card: rgba(255, 255, 255, 0.075);
+  --card-line: rgba(255, 255, 255, 0.2);
+  --ok: #b5e8bf;     /* the site's "your action" green (Generate button) */
+  --ai: #ffd48a;     /* the site's amber (sound button, warnings) */
+  --info: #8fc7ff;   /* polish / retouch */
+  --bad: #ff9b94;    /* the site's red (errors) */
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #1b1f22; color: var(--ink); }
+body {
+  font-family: "Source Sans Pro", "Noto Color Emoji", sans-serif;
+  font-weight: 400;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.page {
+  position: relative;
+  width: 210mm;
+  height: 296.4mm; /* a hair under A4 so Chrome never adds a blank sheet */
+  overflow: hidden;
+  padding: 11mm 13mm 9mm;
+  background: linear-gradient(rgba(19, 21, 25, 0.66), rgba(19, 21, 25, 0.9)), url("../frontend/src/template/images/bg.jpg") center / cover no-repeat;
+  page-break-after: always;
+  break-after: page;
+  display: flex;
+  flex-direction: column;
+}
+.page:last-of-type { page-break-after: auto; break-after: auto; }
+/* Mermaid leaves a measuring container at the end of <body>: it must never reach the PDF
+   (print only: on screen Mermaid needs it to measure the text) */
+@media print { body > :not(.page) { display: none !important; } }
+
+/* ---------- header (mirrors the home page) ---------- */
+.hero { text-align: center; }
+.hero .badge {
+  width: 15mm; height: 15mm; margin: 0 auto;
+  border: 1px solid var(--ink); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 5.6mm;
+}
+.hero .stem { width: 1px; height: 4mm; background: var(--line); margin: 0 auto; }
+.hero .rule { height: 1px; background: var(--line); }
+.hero h1 {
+  margin: 3.2mm 0 1.6mm;
+  font-weight: 600; font-size: 26pt; letter-spacing: 0.32em; text-transform: uppercase;
+}
+.hero h1 .gap { color: transparent; -webkit-text-stroke: 1px rgba(255, 255, 255, 0.9); }
+.hero .tagline {
+  margin: 0; font-size: 9.5pt; font-weight: 300; letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--muted); line-height: 1.7;
+}
+.kicker {
+  display: inline-block; margin-top: 2.6mm; padding: 0.9mm 3.5mm;
+  border: 1px solid var(--card-line); border-radius: 20px;
+  font-size: 7.5pt; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted);
+}
+
+/* ---------- section titles & frames ---------- */
+.section-title {
+  display: flex; align-items: center; gap: 2.5mm;
+  margin: 4.5mm 0 2.2mm;
+  font-size: 9pt; font-weight: 600; letter-spacing: 0.26em; text-transform: uppercase;
+}
+.section-title .dot {
+  width: 6.2mm; height: 6.2mm; border-radius: 50%; border: 1px solid var(--ink);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 2.9mm; letter-spacing: 0;
+}
+.section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+.frame {
+  background: var(--card); border: 1px solid var(--card-line); border-radius: 6px;
+  padding: 3mm;
+}
+
+/* Mermaid: keep it vector, full width, dark-friendly */
+.chart { flex: 1; min-height: 0; padding: 2mm; }
+.chart .mermaid { width: 100%; height: 100%; margin: 0; padding: 0; background: none; border: 0; }
+.chart .mermaid svg { width: 100% !important; height: 100% !important; max-width: none !important; }
+
+/* legend chips under the journey */
+.legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 2mm 4mm; margin-top: 2.5mm; font-size: 8pt; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 1.6mm; }
+.legend i { width: 3.2mm; height: 3.2mm; border-radius: 50%; border: 1.5px solid; display: inline-block; }
+.legend .u { border-color: var(--ok); }
+.legend .a { border-color: var(--ai); }
+.legend .p { border-color: var(--info); }
+.legend .e { border-color: var(--ink); background: var(--ink); }
+
+/* ---------- page 2: tiles + screenshots ---------- */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2.6mm; }
+.tile {
+  border: 1px solid var(--card-line); border-radius: 6px; background: var(--card);
+  padding: 2.8mm 3mm; display: flex; gap: 2.6mm; align-items: flex-start;
+}
+.tile .ico {
+  flex: none; width: 8mm; height: 8mm; border-radius: 50%; border: 1px solid currentColor;
+  display: flex; align-items: center; justify-content: center; font-size: 3.4mm;
+}
+.tile b { display: block; font-weight: 600; font-size: 9pt; letter-spacing: 0.04em; margin-bottom: 0.6mm; }
+.tile span { font-size: 8.2pt; line-height: 1.35; color: var(--muted); display: block; }
+.c-ok { color: var(--ok); }
+.c-ai { color: var(--ai); }
+.c-info { color: var(--info); }
+.c-bad { color: var(--bad); }
+
+.shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
+.shot { border: 1px solid var(--card-line); border-radius: 6px; overflow: hidden; background: #111; }
+.shot img { display: block; width: 100%; height: 48mm; object-fit: cover; object-position: center top; }
+.shot .cap {
+  display: flex; align-items: center; gap: 2mm; padding: 1.8mm 2.6mm;
+  font-size: 8.2pt; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.footer {
+  margin-top: auto; padding-top: 3mm; border-top: 1px solid var(--line);
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1mm 4mm;
+  font-size: 7.4pt; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
+}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@12.2.0/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: "dark",
+    flowchart: { htmlLabels: true, curve: "basis", padding: 10, nodeSpacing: 28, rankSpacing: 34 },
+    themeVariables: {
+      background: "transparent",
+      fontFamily: "Source Sans Pro, Noto Color Emoji, sans-serif",
+      fontSize: "18px",
+      lineColor: "#cfd6dc",
+      primaryTextColor: "#ffffff",
+      clusterBkg: "rgba(255,255,255,0.05)",
+      clusterBorder: "rgba(255,255,255,0.28)",
+      edgeLabelBackground: "#1f2328",
+      actorBkg: "#213328",
+      actorBorder: "#b5e8bf",
+      actorTextColor: "#ffffff",
+      signalColor: "#cfd6dc",
+      signalTextColor: "#ffffff",
+      noteBkgColor: "#1f2d3d",
+      noteBorderColor: "#8fc7ff",
+      noteTextColor: "#ffffff",
+      activationBkgColor: "#3a3121",
+      activationBorderColor: "#ffd48a",
+      sequenceNumberColor: "#1b1f22"
+    }
+  });
+  document.addEventListener("DOMContentLoaded", () => {
+    mermaid.run({ querySelector: ".mermaid" }).then(() => { document.body.dataset.ready = "1"; });
+  });
+</script>
+</head>
+<body>
+
+<!-- ============================ PAGE 1 — the journey ============================ -->
+<section class="page">
+  <header class="hero">
+    <div class="badge"><i class="fas fa-image" aria-hidden="true"></i></div>
+    <div class="stem"></div>
+    <div class="rule"></div>
+    <h1>Story<span class="gap">Gap</span>Board</h1>
+    <p class="tagline">Turn a few images into a complete storyboard.<br>Bring your own key and create stories!</p>
+    <div class="kicker"><i class="fas fa-route"></i>&nbsp; How it works · visual guide</div>
+  </header>
+
+  <div class="section-title"><span class="dot">🧭</span>Your journey, from the first click to goodbye</div>
+
+  <div class="frame chart">
+    <pre class="mermaid">
+flowchart TD
+  A(["🌐 Open the site"]):::edge --> B["🔑 Model: provider + your key"]:::user
+  B --> C["📎 Files: notes and images (optional)"]:::user
+  C --> D["🧩 Generate: layout · ratio · your panels · story"]:::user
+  D --> P["🤖 Model draws the empty panels"]:::ai
+  P --> E["🎞️ Storyboard: one image, all panels"]:::edge
+  E -- "drag a panel" --> E
+  E -- "pencil" --> F["✏️ Retouch one panel"]:::info
+  F -- "undo · redo · again" --> F
+  F --> E
+  E -- "Frame tab" --> G["🖼️ Frame: style the whole board"]:::info
+  G --> E
+  E -- "Download tab" --> H["⬇️ Download panels or full board · share notice first"]:::user
+  H --> I(["👋 Leave"]):::edge
+  E -. "new idea" .-> D
+
+  classDef edge fill:#ffffff,stroke:#ffffff,color:#1b1f22
+  classDef user fill:#213328,stroke:#b5e8bf,color:#ffffff
+  classDef ai fill:#3a3121,stroke:#ffd48a,color:#ffffff
+  classDef info fill:#1f2d3d,stroke:#8fc7ff,color:#ffffff
+    </pre>
+  </div>
+  <div class="legend">
+    <span><i class="u"></i>Your action</span>
+    <span><i class="a"></i>AI model</span>
+    <span><i class="p"></i>Polish</span>
+    <span><i class="e"></i>Start / result</span>
+  </div>
+</section>
+
+<!-- ============================ PAGE 2 — under the hood ============================ -->
+<section class="page">
+  <div class="section-title"><span class="dot">⚙️</span>Under the hood</div>
+
+  <div class="frame chart" style="flex: none; height: 118mm;">
+    <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant B as 🌐 Your browser
+  participant S as 🖥️ Server (memory only)
+  participant P as 🤖 Image model
+  Note over B: 🧭 plans layout and ratio<br/>🧱 builds the guide: your panels + numbered gaps
+  B->>S: 🧩 Generate: guide, files, story (one request)
+  S->>S: 🛡️ check key, limits, files
+  S->>P: 📡 forward request
+  P-->>S: 🎨 one PNG
+  S-->>B: 🖼️ done · image ready
+  Note over B: ✂️ cuts the panels, fits your images, frames the board
+  B->>S: ✏️ Retouch: one panel + your marks + reach
+  S->>P: 📡 forward panel and marked copy
+  P-->>S: 🎨 one PNG
+  S-->>B: 🖼️ image
+  Note over B: 🎭 blends only the change into that panel
+    </pre>
+  </div>
+
+  <div class="section-title"><span class="dot">🛡️</span>Privacy &amp; limits</div>
+  <div class="tiles">
+    <div class="tile"><div class="ico c-ok"><i class="fas fa-key"></i></div><div><b>Key stays here</b><span>Memory of this tab only. Never stored, never in a URL.</span></div></div>
+    <div class="tile"><div class="ico c-ok"><i class="fas fa-lock"></i></div><div><b>Files never saved</b><span>Uploads and results live in memory, never on disk.</span></div></div>
+    <div class="tile"><div class="ico c-ai"><i class="fas fa-receipt"></i></div><div><b>Light log</b><span>Prompt, settings and cost. IPs and keys are hashed.</span></div></div>
+    <div class="tile"><div class="ico c-info"><i class="fas fa-image"></i></div><div><b>One image per request</b><span>Every generation and retouch returns exactly one picture.</span></div></div>
+    <div class="tile"><div class="ico c-info"><i class="fas fa-file-upload"></i></div><div><b>Up to 5 files</b><span>Text or images, 5 MB each. Images checked by content.</span></div></div>
+    <div class="tile"><div class="ico c-bad"><i class="fas fa-stopwatch"></i></div><div><b>Fair use</b><span>One job at a time, per-minute and daily caps per visitor.</span></div></div>
+  </div>
+
+  <div class="section-title"><span class="dot">📸</span>In action</div>
+  <div class="shots">
+    <figure class="shot" style="margin:0"><img src="../img/generate.jpg" alt=""><div class="cap"><i class="fas fa-th-large c-ok"></i>Generate</div></figure>
+    <figure class="shot" style="margin:0"><img src="../img/storyboard.jpg" alt=""><div class="cap"><i class="fas fa-film c-ai"></i>Storyboard</div></figure>
+    <figure class="shot" style="margin:0"><img src="../img/retouch.jpg" alt=""><div class="cap"><i class="fas fa-pen c-info"></i>Retouch</div></figure>
+  </div>
+
+  <div class="footer">
+    <span><i class="fas fa-palette"></i>&nbsp; Design: HTML5 UP (Dimension)</span>
+    <span><i class="fas fa-icons"></i>&nbsp; Icons: Font Awesome</span>
+    <span><i class="fas fa-project-diagram"></i>&nbsp; Diagrams: Mermaid</span>
+  </div>
+</section>
+
+</body>
+</html>

@@ -1,7 +1,15 @@
+import { useState } from 'react'
 import type { Meta } from '../api'
+import ImageViewer from '../components/ImageViewer'
+import Modal from '../components/Modal'
+
+/** The visual guide: its two pages as images (see docs/how-it-works.html), plus the PDF to keep. */
+const GUIDE_PAGES = ['/how-it-works/page-1.jpg', '/how-it-works/page-2.jpg']
 
 export default function AboutArticle({ meta }: { meta: Meta | null }) {
   const limits = meta?.limits
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guidePage, setGuidePage] = useState(0)
   // 0 = no limit (server setting): say nothing about it
   const caps = [
     limits && limits.generate_per_minute > 0 ? `${limits.generate_per_minute} per minute` : '',
@@ -29,6 +37,11 @@ export default function AboutArticle({ meta }: { meta: Meta | null }) {
           panel): nothing else in the storyboard changes. Undo and redo retouches freely, then download the
           storyboard.</li>
       </ol>
+      <p>
+        <button type="button" className="guide-open" onClick={() => { setGuidePage(0); setGuideOpen(true) }}>
+          <span className="icon solid fa-file-alt" aria-hidden="true"></span> Visual guide (2 pages)
+        </button>
+      </p>
       <h3>Privacy</h3>
       <ul>
         <li>Your API key, prompt, files and panels stay in this tab. Nothing is kept after you close it.</li>
@@ -44,6 +57,26 @@ export default function AboutArticle({ meta }: { meta: Meta | null }) {
         Repeated rejected API keys temporarily block new generations from the same connection.</p>
       <p className="hint">Design: <a href="https://html5up.net" target="_blank" rel="noopener noreferrer">HTML5 UP</a> (Dimension).
         Icons: Font Awesome.</p>
+
+      {guideOpen && (
+        <Modal title="Visual guide" busy={false} onClose={() => setGuideOpen(false)} className="guide-modal">
+          {/* keyed by the page: each page starts fitted to the window */}
+          <ImageViewer key={GUIDE_PAGES[guidePage]} src={GUIDE_PAGES[guidePage]}
+            alt={`Visual guide, page ${guidePage + 1} of ${GUIDE_PAGES.length}`} width={1240} height={1754} />
+          <div className="guide-nav">
+            <button type="button" className="icon-only icon solid fa-chevron-left" aria-label="Previous page"
+              title="Previous page" disabled={guidePage === 0} onClick={() => setGuidePage((p) => p - 1)} />
+            <span className="guide-count">{guidePage + 1} / {GUIDE_PAGES.length}</span>
+            <button type="button" className="icon-only icon solid fa-chevron-right" aria-label="Next page"
+              title="Next page" disabled={guidePage === GUIDE_PAGES.length - 1}
+              onClick={() => setGuidePage((p) => p + 1)} />
+            <a className="guide-pdf" href="/how-it-works.pdf" target="_blank" rel="noopener noreferrer"
+              title="Open the PDF">
+              <span className="icon solid fa-file-pdf" aria-hidden="true"></span> PDF
+            </a>
+          </div>
+        </Modal>
+      )}
     </>
   )
 }

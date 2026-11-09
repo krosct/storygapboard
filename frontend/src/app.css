@@ -726,6 +726,53 @@ ul.plain li { padding-left: 0; }
 /* Download notice: share lines, then the Download button that unlocks after a wait */
 .share-note { margin: 0 0 0.6rem; }
 .modal hr { margin: 1.25rem 0; }
+
+/* About: visual guide, opened in the in-page modal (its pages are images, the PDF is a link) */
+#main article button.guide-open {
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: none;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.25em;
+  cursor: pointer;
+}
+#main article button.guide-open:hover, #main article button.guide-open:focus-visible { color: #ffffff; }
+/* Zoomable picture (ImageViewer): the box is the picture's frame, the picture is fitted inside it */
+.viewer { margin: 0 0 0.75rem; }
+.viewer-stage {
+  position: relative;
+  height: min(64vh, 46rem);
+  overflow: hidden;
+  background: #15181b;
+  border-radius: 3px;
+  touch-action: none; /* our own pinch and drag, not the page's */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: zoom-in;
+}
+.viewer-stage.is-zoomed { cursor: grab; }
+.viewer-stage.is-zoomed:active { cursor: grabbing; }
+.viewer-stage img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: center;
+  pointer-events: none;
+  will-change: transform;
+}
+.viewer-bar { display: flex; align-items: center; justify-content: center; gap: 0.6rem; margin-top: 0.6rem; }
+.viewer-bar .viewer-zoom { min-width: 4.5ch; text-align: center; font-size: 0.85rem; color: rgba(255, 255, 255, 0.75); }
+.guide-nav { display: flex; align-items: center; justify-content: center; gap: 0.9rem; flex-wrap: wrap; }
+.guide-nav .guide-count { font-size: 0.85rem; min-width: 4ch; text-align: center; color: rgba(255, 255, 255, 0.75); }
+.guide-nav .guide-pdf { font-size: 0.85rem; border-bottom: 0; text-decoration: underline dotted; }
 .wait-btn { position: relative; overflow: hidden; }
 .wait-btn.is-waiting { filter: brightness(0.55); cursor: not-allowed; }
 .wait-fill { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.35); }

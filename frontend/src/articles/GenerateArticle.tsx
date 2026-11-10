@@ -460,7 +460,7 @@ export default function GenerateArticle(p: Props) {
   }
 
   type TabId = 'generate' | 'frame' | 'board' | 'download'
-  const tabs: [TabId, string][] = [['generate', 'Generate'], ...(board ? [['board', 'Storyboard'], ['frame', 'Frame'], ['download', 'Download']] as [TabId, string][] : [])]
+  const tabs: [TabId, string][] = [['generate', 'Fill'], ...(board ? [['board', 'Storyboard'], ['frame', 'Frame'], ['download', 'Download']] as [TabId, string][] : [])]
   const active: TabId = tab !== 'generate' && !board ? 'generate' : tab
   const tabIndex = tabs.findIndex(([id]) => id === active)
   const fileCount = p.files.length
@@ -528,6 +528,7 @@ export default function GenerateArticle(p: Props) {
       <div className="summary-line">
         <span className="ratio-label" title="Panel shape preview"><RatioPreview ratio={aspectRatio} />Panels {aspectRatio}</span>
         <span>Storyboard: {layoutTitle(layout)}{fixedCount > 0 && `, ${fixedCount} fixed`}</span>
+        <span className="summary-break" aria-hidden="true" />
         {fakeModel
           ? <span className="fake-model" title="DEBUG_FAKE_MODEL is on: no provider is called">Model: simulated (development)</span>
           : <span>Model: <a href="#model">{providerLabel} · {model || '…'}</a></span>}
@@ -539,7 +540,7 @@ export default function GenerateArticle(p: Props) {
       </div>
 
       <ul className="actions fixed">
-        <li><input type="submit" className="btn-generate" value={running ? 'Working…' : 'Generate'} disabled={running} /></li>
+        <li><input type="submit" className="btn-generate" value={running ? 'Working…' : 'Fill'} disabled={running} /></li>
         <li><input type="button" className="btn-cancel" value="Cancel" disabled={!running} onClick={() => void onCancel()} /></li>
         <li>
           <button type="button"
@@ -573,7 +574,7 @@ export default function GenerateArticle(p: Props) {
             <Modal title="Replace the storyboard?" busy={false} small onClose={() => setConfirmReplace(false)}>
               <p>The current one will be lost.</p>
               <ul className="actions fixed">
-                <li><button type="button" className="primary" onClick={() => void generate()}>Generate</button></li>
+                <li><button type="button" className="primary" onClick={() => void generate()}>Fill</button></li>
                 <li><button type="button" onClick={() => setConfirmReplace(false)}>Cancel</button></li>
               </ul>
             </Modal>

@@ -26,7 +26,7 @@ export default function AboutArticle({ meta }: { meta: Meta | null }) {
         <li>In <a href="#model">Model</a>, pick the provider (OpenRouter or OpenAI), set your key for it and, if you like,
           a model. Pick one that accepts images as input.</li>
         <li>Optionally attach notes or reference images in <a href="#files">Files</a>.</li>
-        <li>In <a href="#generate">Generate</a>, choose the layout and the ratio (the shape of each panel), and drop your
+        <li>In <a href="#fill">Fill</a>, choose the layout and the ratio (the shape of each panel), and drop your
           own images in some panels. They go into the storyboard exactly as shown: drag an image to choose its framing.
           The model draws the empty panels.</li>
         <li>Writing the story is optional: leave it empty and the model completes it from your panels, or add what you

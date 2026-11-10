@@ -37,7 +37,7 @@ export default function ModelArticle({ meta, provider, setProvider, model, setMo
   const info = providers.find((p) => p.id === provider) ?? providers[0]
   const guide = GUIDE[provider]
   return (
-    <form onSubmit={(e) => { e.preventDefault(); window.location.hash = '#generate' }} noValidate>
+    <form onSubmit={(e) => { e.preventDefault(); window.location.hash = '#fill' }} noValidate>
       <p>StoryGapBoard runs on the provider you pick, with your own key: generations are billed to your
         account there.</p>
       <div className="fields">

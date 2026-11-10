@@ -110,7 +110,7 @@ export default function FilesArticle({ meta, files, setFiles, notify }: Props) {
         {files.length > 0 && (
           <li className="done-row-start"><button type="button" onClick={() => { setFiles([]); setProblems([]) }}>Remove all</button></li>
         )}
-        <li><a className="button primary" href="#generate">Done</a></li>
+        <li><a className="button primary" href="#fill">Done</a></li>
       </ul>
       <p className="hint">Files stay in this tab and are sent only with a generation. The server reads them in memory
         and never saves them.</p>

@@ -152,7 +152,7 @@ sequenceDiagram
 
 #### 1. The visitor's input
 
-Everything starts on the Generate page.
+Everything starts on the Fill page.
 
 - **Layout:** the grid, rows × columns.
 - **Ratio:** the shape of **each panel**, not of the whole storyboard.
@@ -239,7 +239,9 @@ small margin.
   is thrown away).
 
 `renderBoard` then draws every source **cover-fitted to the exact panel shape**, with a white margin
-and a thin dark frame around each panel.
+and a thin dark frame around each panel. The **Frame** tab restyles that same board (background,
+margins, borders, corners, shadow, numbers, ready-made looks) and redraws it from the sources, with no
+model call (see [step 12](#12-framing-the-storyboard)).
 
 > **Example:** the model's panel 2 came out 0.6:1 but the panel is 1:1. It is scaled to fill the
 > square, and a bit of its top and bottom is cropped.
@@ -249,7 +251,7 @@ and a thin dark frame around each panel.
 Because the board keeps the **sources**, not just a flat picture, any panel can still be dragged,
 or moved with the arrow keys, to change its framing. That only redraws the board: no model call
 and no cost. While a panel is held, its label and buttons hide, so the framing is fully visible.
-Each panel also has a pencil button (retouch) and an arrow button (download that panel alone).
+Each panel also has a pencil button (retouch). Downloads are in the Download tab, see [step 13](#13-the-final-file).
 
 > **Example:** the model put a character's head too close to the top of the frame: drag the panel
 > down a little and the head comes back into view.
@@ -282,8 +284,8 @@ copy with the marks. The prompt names the mark color, says that the marks are on
 asks for a clear change there, and also says in words where the marks are, for models that look at
 them less carefully. OpenAI gets the panel's **exact** shape as `size`.
 
-> **Example:** "The marked area is in the middle left of the panel, spanning about 21-42% of its
-> width (from the left) and 27-44% of its height (from the top)."
+> **Example:** "The marked area is in the middle left of the panel, spanning about 19-45% of its
+> width (from the left) and 24-45% of its height (from the top)."
 
 #### 11. Blending the retouch
 
@@ -314,7 +316,8 @@ for. So the browser does three things:
 #### 13. The final file
 
 The download is encoded by the browser in the chosen format (PNG, JPEG or WebP), straight from the
-current board. The server never sees the final storyboard.
+current board, framed or not. The Download tab offers a preview at full size, each panel on its own, or
+the full storyboard. The server never sees the final storyboard.
 
 ---
 
@@ -377,7 +380,7 @@ A typical imperfect answer:
 
 ### 5. Cutting the panels out
 
-The red dashes are an even split into thirds; the green boxes are what `detectCells` keeps:
+The red dashes are an even split into thirds. The green box is the cut kept for panel 2, the one the model drew (panels 1 and 3 are the visitor's own images, so the model's cuts there are not used):
 
 ![Detected cuts](05-detected-cuts.png)
 
@@ -393,8 +396,8 @@ frame separate the panels.
 
 ![Storyboard](06-storyboard.png)
 
-On the page, with the mouse over panel 2: its two buttons (pencil = retouch, arrow = download this
-panel) and the row under the storyboard (undo, redo, open full size, download):
+On the page, with the mouse over panel 2: its pencil button (retouch). Under the storyboard, the undo and
+redo buttons. Downloads live in the Download tab ([step 13](#13-the-final-file)):
 
 ![Storyboard on the page](06-storyboard-on-page.png)
 
@@ -421,7 +424,7 @@ Only this one panel is sent, as two images:
 
 The prompt ([08-prompt-retouch.txt](08-prompt-retouch.txt)) names the mark color, says it is only a
 pointer, asks for a clear change inside the marks, and says in words where the marks are ("middle
-left, about 21-42% of its width…").
+left, about 19-45% of its width…").
 
 ### 9. The model's retouch (simulated)
 
@@ -447,3 +450,26 @@ and every pixel of panel 2 outside the mask, did not change. In panel 2's window
 the blue head, and redo applies the retouch again.
 
 ![Storyboard after the retouch](11-storyboard-after-retouch.png)
+
+### 12. Framing the storyboard
+
+The **Frame** tab restyles the board without asking the model again. The **Polaroid** look is picked
+here from the ready-made looks; the other sections (background, margin and gaps, outer frame, title,
+panel border, corners and shadow, numbers) sit under the same tab, one card each, under the preview.
+
+![Frame tab](12-frame-tab.png)
+
+The same storyboard, redrawn from its sources with the look applied:
+
+![Framed storyboard](12-frame-board.png)
+
+### 13. The final file
+
+The **Download** tab has a preview at full size, one button per panel, and the whole storyboard. Each
+download first shows a short notice asking the visitor to share the site; the file is then made in the
+browser from the current board. Here, the framed storyboard saved as PNG:
+
+![Download tab](13-download-tab.png)
+
+![Final file: the framed storyboard](13-final-download.png)
+

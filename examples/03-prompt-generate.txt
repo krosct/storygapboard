@@ -5,4 +5,6 @@ The FIRST reference image is the layout guide of this storyboard: the same grid,
 Story:
 Pip the robot finds a tiny sprout, waters it at noon, and at night it has bloomed.
 
+Generate the image with aspect ratio 21:9.
+
 Generate the image at resolution tier 1K.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!--
-  Source of frontend/public/how-it-works.pdf (2 A4 pages, linked from the About page).
+  Source of frontend/public/how-it-works.pdf (3 A4 pages, linked from the About page).
   Visual language copied from the site (template colors, Source Sans Pro, Font Awesome 5, thin lines).
   Diagrams: Mermaid, rendered in the browser, pinned to 12.2.0 (not the newest release on purpose).
   Regenerate: open this file in Chrome with the Mermaid script loaded, then Print > Save as PDF,
@@ -24,7 +24,7 @@
   --line: rgba(255, 255, 255, 0.5);
   --card: rgba(255, 255, 255, 0.075);
   --card-line: rgba(255, 255, 255, 0.2);
-  --ok: #b5e8bf;     /* the site's "your action" green (Generate button) */
+  --ok: #b5e8bf;     /* the site's "your action" green (Fill button) */
   --ai: #ffd48a;     /* the site's amber (sound button, warnings) */
   --info: #8fc7ff;   /* polish / retouch */
   --bad: #ff9b94;    /* the site's red (errors) */
@@ -63,6 +63,7 @@ body {
   display: flex; align-items: center; justify-content: center;
   font-size: 5.6mm;
 }
+.hero .badge .logo-mark { width: 12mm; height: 12mm; display: block; }
 .hero .stem { width: 1px; height: 4mm; background: var(--line); margin: 0 auto; }
 .hero .rule { height: 1px; background: var(--line); }
 .hero h1 {
@@ -129,6 +130,7 @@ body {
 .c-bad { color: var(--bad); }
 
 .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
+.shots.big .shot img { height: 96mm; }
 .shot { border: 1px solid var(--card-line); border-radius: 6px; overflow: hidden; background: #111; }
 .shot img { display: block; width: 100%; height: 48mm; object-fit: cover; object-position: center top; }
 .shot .cap {
@@ -182,7 +184,48 @@ body {
 <!-- ============================ PAGE 1 — the journey ============================ -->
 <section class="page">
   <header class="hero">
-    <div class="badge"><i class="fas fa-image" aria-hidden="true"></i></div>
+    <div class="badge">
+    <svg viewBox="0 0 100 100" aria-hidden="true" class="logo-mark">
+      <defs>
+        <radialGradient id="sgb-spark-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.45" />
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+        </radialGradient>
+        <clipPath id="sgb-tl"><rect x="24.5" y="24.5" width="23" height="23" /></clipPath>
+        <clipPath id="sgb-bl"><rect x="24.5" y="52.5" width="23" height="23" /></clipPath>
+        <clipPath id="sgb-br"><rect x="52.5" y="52.5" width="23" height="23" /></clipPath>
+      </defs>
+      <rect x="24" y="24" width="24" height="24" rx="1" fill="none" stroke="#fff" stroke-width="2.2" />
+      <g clip-path="url(#sgb-tl)" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="30.5" cy="30.5" r="2.2" stroke-width="1.5" />
+        <path d="M24 44 L34.5 34 L37.5 38" stroke-width="1.6" />
+        <path d="M35.5 40.5 L42.5 31.5 L48.5 40" stroke-width="1.6" />
+      </g>
+      <path d="M68 24 H52 V48 H76 V36" fill="none" stroke="rgb(255, 255, 255)" stroke-width="2.2"
+        stroke-dasharray="3.2 3.2" stroke-linecap="round" stroke-linejoin="round" />
+      <circle cx="61" cy="37" r="8.5" fill="url(#sgb-spark-glow)" />
+      <path d="M61 30.2 C61.4 34.5 62.5 35.6 66.8 36 C62.5 36.4 61.4 37.5 61 41.8 C60.6 37.5 59.5 36.4 55.2 36 C59.5 35.6 60.6 34.5 61 30.2 Z" fill="#fff" />
+      <path d="M56.8 30 C57 31.6 57.4 32 59 32.2 C57.4 32.4 57 32.8 56.8 34.4 C56.6 32.8 56.2 32.4 54.6 32.2 C56.2 32 56.6 31.6 56.8 30 Z" fill="#fff" />
+      <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M77.5 18.5 L66.5 29.5 L63.5 36.5 L70.5 33.5 L81.5 22.5 Z" stroke-width="2" />
+        <path d="M66.5 29.5 L70.5 33.5" stroke-width="1.6" />
+        <path d="M71.5 28.5 L76.5 23.5" stroke-width="1.6" />
+      </g>
+      <rect x="24" y="52" width="24" height="24" rx="1" fill="none" stroke="#fff" stroke-width="2.2" />
+      <g clip-path="url(#sgb-bl)" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="36" cy="57.5" r="2" />
+        <path d="M34.2 60.5 L32 62.8 L29.6 66.7 L31.4 67.2 L33.5 64.2 L34.2 67.5 L30.8 75.5 L32.8 75.5 L35.8 69.2 L38.8 75.5 L40.8 75.5 L37.6 67.2 L37.2 63.5 L40.5 65.8 L41.5 64.3 L37.5 60.5 Z" />
+      </g>
+      <rect x="52" y="52" width="24" height="24" rx="1" fill="none" stroke="#fff" stroke-width="2.2" />
+      <g clip-path="url(#sgb-br)" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M59.2 56.2 A 2.4 2.4 0 1 0 61.6 59.6 A 2.1 2.1 0 1 1 59.2 56.2 Z" stroke-width="1.3" />
+        <path d="M52 70.5 H56 V73.5 H57.8 V66 H60.8 V71 H64 V61 H67.2 V69.5 H69.2 V73 H71.2 V62 L74 63.8 V69.5 H76" stroke-width="1.5" />
+        <path d="M64.8 61 V59.2 H66.4 V61" stroke-width="1.3" />
+        <path d="M65.6 59.2 V56.8" stroke-width="1.3" />
+        <path d="M59.3 66 V64.2" stroke-width="1.3" />
+      </g>
+    </svg>
+    </div>
     <div class="stem"></div>
     <div class="rule"></div>
     <h1>Story<span class="gap">Gap</span>Board</h1>
@@ -197,7 +240,7 @@ body {
 flowchart TD
   A(["🌐 Open the site"]):::edge --> B["🔑 Model: provider + your key"]:::user
   B --> C["📎 Files: notes and images (optional)"]:::user
-  C --> D["🧩 Generate: layout · ratio · your panels · story"]:::user
+  C --> D["🧩 Fill: layout · ratio · your panels · story"]:::user
   D --> P["🤖 Model draws the empty panels"]:::ai
   P --> E["🎞️ Storyboard: one image, all panels"]:::edge
   E -- "drag a panel" --> E
@@ -236,7 +279,7 @@ sequenceDiagram
   participant S as 🖥️ Server (memory only)
   participant P as 🤖 Image model
   Note over B: 🧭 plans layout and ratio<br/>🧱 builds the guide: your panels + numbered gaps
-  B->>S: 🧩 Generate: guide, files, story (one request)
+  B->>S: 🧩 Fill: guide, files, story (one request)
   S->>S: 🛡️ check key, limits, files
   S->>P: 📡 forward request
   P-->>S: 🎨 one PNG
@@ -260,11 +303,17 @@ sequenceDiagram
     <div class="tile"><div class="ico c-bad"><i class="fas fa-stopwatch"></i></div><div><b>Fair use</b><span>One job at a time, per-minute and daily caps per visitor.</span></div></div>
   </div>
 
+</section>
+
+<!-- ============================ PAGE 3 — in action ============================ -->
+<section class="page">
   <div class="section-title"><span class="dot">📸</span>In action</div>
-  <div class="shots">
-    <figure class="shot" style="margin:0"><img src="../img/generate.jpg" alt=""><div class="cap"><i class="fas fa-th-large c-ok"></i>Generate</div></figure>
+  <div class="shots big">
+    <figure class="shot" style="margin:0"><img src="../img/fill.jpg" alt=""><div class="cap"><i class="fas fa-th-large c-ok"></i>Fill</div></figure>
     <figure class="shot" style="margin:0"><img src="../img/storyboard.jpg" alt=""><div class="cap"><i class="fas fa-film c-ai"></i>Storyboard</div></figure>
     <figure class="shot" style="margin:0"><img src="../img/retouch.jpg" alt=""><div class="cap"><i class="fas fa-pen c-info"></i>Retouch</div></figure>
+    <figure class="shot" style="margin:0"><img src="../img/frame.jpg" alt=""><div class="cap"><i class="fas fa-border-all c-ok"></i>Frame</div></figure>
+    <figure class="shot" style="margin:0"><img src="../img/download.jpg" alt=""><div class="cap"><i class="fas fa-download c-ai"></i>Download</div></figure>
   </div>
 
   <div class="footer">

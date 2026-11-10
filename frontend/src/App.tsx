@@ -9,9 +9,9 @@ import AboutArticle from './articles/AboutArticle'
 import { loadPrefs, savePrefs, type Prefs, type Provider } from './prefs'
 import type { Panels } from './board'
 
-const ARTICLES = ['generate', 'files', 'model', 'about'] as const
+const ARTICLES = ['fill', 'files', 'model', 'about'] as const
 const NAV: { id: (typeof ARTICLES)[number]; label: string }[] = [
-  { id: 'generate', label: 'Generate' },
+  { id: 'fill', label: 'Fill' },
   { id: 'files', label: 'Files' },
   { id: 'model', label: 'Model' },
   { id: 'about', label: 'About' },
@@ -77,7 +77,73 @@ export default function App() {
       <div id="wrapper">
         <header id="header" hidden={articleOpen}>
           <div className="logo">
-            <span className="icon fa-image" aria-hidden="true"></span>
+            <svg className="logo-mark" viewBox="0 0 100 100" aria-hidden="true">
+              <defs>
+                <radialGradient id="sgb-spark-glow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="#ffffff" stopOpacity="0.45" />
+                  <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+                </radialGradient>
+                <clipPath id="sgb-tl"><rect x="24.5" y="24.5" width="23" height="23" /></clipPath>
+                <clipPath id="sgb-bl"><rect x="24.5" y="52.5" width="23" height="23" /></clipPath>
+                <clipPath id="sgb-br"><rect x="52.5" y="52.5" width="23" height="23" /></clipPath>
+              </defs>
+
+              {/* Top-left panel: mountain range + sun */}
+              <rect x="24" y="24" width="24" height="24" rx="1" fill="none" stroke="#fff" strokeWidth="2.2" />
+              <g clipPath="url(#sgb-tl)" fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="30.5" cy="30.5" r="2.2" strokeWidth="1.5" />
+                <path d="M24 44 L34.5 34 L37.5 38" strokeWidth="1.6" />
+                <path d="M35.5 40.5 L42.5 31.5 L48.5 40" strokeWidth="1.6" />
+              </g>
+
+              {/* Top-right panel: dashed "gap" + AI sparkles + closed pencil inside the circle */}
+              <path
+                d="M68 24 H52 V48 H76 V36"
+                fill="none"
+                stroke="rgb(255, 255, 255)"
+                strokeWidth="2.2"
+                strokeDasharray="3.2 3.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <circle cx="61" cy="37" r="8.5" fill="url(#sgb-spark-glow)" />
+              <path
+                d="M61 30.2 C61.4 34.5 62.5 35.6 66.8 36 C62.5 36.4 61.4 37.5 61 41.8 C60.6 37.5 59.5 36.4 55.2 36 C59.5 35.6 60.6 34.5 61 30.2 Z"
+                fill="#fff"
+              />
+              <path
+                d="M56.8 30 C57 31.6 57.4 32 59 32.2 C57.4 32.4 57 32.8 56.8 34.4 C56.6 32.8 56.2 32.4 54.6 32.2 C56.2 32 56.6 31.6 56.8 30 Z"
+                fill="#fff"
+              />
+              <g fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M77.5 18.5 L66.5 29.5 L63.5 36.5 L70.5 33.5 L81.5 22.5 Z" strokeWidth="2" />
+                <path d="M66.5 29.5 L70.5 33.5" strokeWidth="1.6" />
+                <path d="M71.5 28.5 L76.5 23.5" strokeWidth="1.6" />
+              </g>
+
+              {/* Bottom-left panel: walking character */}
+              <rect x="24" y="52" width="24" height="24" rx="1" fill="none" stroke="#fff" strokeWidth="2.2" />
+              <g clipPath="url(#sgb-bl)" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="36" cy="57.5" r="2" />
+                <path d="M34.2 60.5 L32 62.8 L29.6 66.7 L31.4 67.2 L33.5 64.2 L34.2 67.5 L30.8 75.5 L32.8 75.5 L35.8 69.2 L38.8 75.5 L40.8 75.5 L37.6 67.2 L37.2 63.5 L40.5 65.8 L41.5 64.3 L37.5 60.5 Z" />
+              </g>
+
+              {/* Bottom-right panel: night city skyline + crescent moon */}
+              <rect x="52" y="52" width="24" height="24" rx="1" fill="none" stroke="#fff" strokeWidth="2.2" />
+              <g clipPath="url(#sgb-br)" fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round">
+                <path
+                  d="M59.2 56.2 A 2.4 2.4 0 1 0 61.6 59.6 A 2.1 2.1 0 1 1 59.2 56.2 Z"
+                  strokeWidth="1.3"
+                />
+                <path
+                  d="M52 70.5 H56 V73.5 H57.8 V66 H60.8 V71 H64 V61 H67.2 V69.5 H69.2 V73 H71.2 V62 L74 63.8 V69.5 H76"
+                  strokeWidth="1.5"
+                />
+                <path d="M64.8 61 V59.2 H66.4 V61" strokeWidth="1.3" />
+                <path d="M65.6 59.2 V56.8" strokeWidth="1.3" />
+                <path d="M59.3 66 V64.2" strokeWidth="1.3" />
+              </g>
+            </svg>
           </div>
           <div className="content">
             <div className="inner">
@@ -98,7 +164,7 @@ export default function App() {
         </header>
 
         <div id="main" hidden={!articleOpen}>
-          {article('generate', null,   // GenerateArticle draws its own title: it becomes tabs once a storyboard exists
+          {article('fill', null,   // GenerateArticle draws its own title: it becomes tabs once a storyboard exists
 
             <GenerateArticle
               meta={meta} prefs={prefs} updatePrefs={updatePrefs}

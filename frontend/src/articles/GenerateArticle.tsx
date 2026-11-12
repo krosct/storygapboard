@@ -8,8 +8,9 @@ import { buildMask } from '../marks'
 import BoardView from '../components/BoardView'
 import Modal from '../components/Modal'
 import {
-  applySourceEdit, blobExt, canvasToBlob, composeBoard, composeGuide, panelCount, planGeneration,
-  renderBoard, renderPanel, restyleGeometry, type BoardGeometry, type PanelSource, type Panels,
+  applySourceEdit, bitmapOf, blobExt, canvasToBlob, compressImage, composeBoard, composeGuide, cropPanel, panelCount, planGeneration,
+  renderBoard, renderPanel, restyleGeometry, type BoardGeometry, type Panel, type PanelSource, type Panels, type Rect,
+  frameGeometry, parseLayout,
 } from '../board'
 import type { Prefs } from '../prefs'
 import { PLAIN_FRAME, sameFrame, type FrameStyle } from '../frame'
@@ -17,6 +18,7 @@ import TabBar from '../components/TabBar'
 import FrameTab from '../components/FrameTab'
 import FullView from '../components/FullView'
 import WaitButton from '../components/WaitButton'
+import { serializeProject, downloadSGB, type ProjectState } from '../project'
 
 interface Props {
   meta: Meta | null
@@ -26,9 +28,33 @@ interface Props {
   setPrompt: (value: string) => void
   apiKey: string
   files: File[]
+  setFiles: (files: File[]) => void
   panels: Panels
   setPanels: (panels: Panels) => void
   notify: Notify
+  /** Currently shown article ('fill', 'files', 'model', 'about') */
+  currentView: string | null
+  /** Restored board from project import (if any). */
+  restoredBoard?: {
+    blob: Blob
+    filename: string
+    cost: number
+    seed: number | null
+    width: number
+    height: number
+    sources: PanelSource[]
+    rects: Rect[]
+    frame: FrameStyle
+  } | null
+  /** Restored history from project import (if any). */
+  restoredHistory?: {
+    undo: PanelSource[][]
+    redo: PanelSource[][]
+    order: number[]
+    redoOrder: number[]
+  } | null
+  /** Called when the restored board has been applied. */
+  onBoardRestored?: () => void
 }
 
 /** One version of the storyboard (the first generation, then one per retouch; moving a framing updates it in place). */
@@ -69,6 +95,16 @@ const emptyHistory = (panels: number): History => ({
 function dropLast(list: number[], value: number): number[] {
   const at = list.lastIndexOf(value)
   return at < 0 ? list : [...list.slice(0, at), ...list.slice(at + 1)]
+}
+
+/** `h` without the retouch history of one panel (a panel that left the board). */
+function withoutPanel(h: History, index: number): History {
+  return {
+    undo: h.undo.map((list, i) => (i === index ? [] : list)),
+    redo: h.redo.map((list, i) => (i === index ? [] : list)),
+    order: h.order.filter((v) => v !== index),
+    redoOrder: h.redoOrder.filter((v) => v !== index),
+  }
 }
 
 function layoutTitle(layout: string): string {
@@ -134,6 +170,30 @@ export default function GenerateArticle(p: Props) {
   const [pendingDownload, setPendingDownload] = useState<{ label: string; run: () => void } | null>(null)
   // the panel as it was before its latest retouch (to compare in the retouch window); framing = the current one
   const [beforePanel, setBeforePanel] = useState<HTMLCanvasElement | null>(null)
+  // Panel index that was being edited when navigating to Files page; used to reopen editor on return
+  const [returnToPanel, setReturnToPanel] = useState<number | null>(null)
+  // Max files allowed (from server meta)
+  const maxFiles = p.meta?.limits.max_files ?? 5
+  // Track previous currentView to detect transition from 'files' -> 'fill'.
+  // Use a ref for the "navigation in progress" flag to avoid stale closures.
+  const [prevView, setPrevView] = useState<string | null>(p.currentView)
+  const navInProgressRef = useRef(false)
+  useEffect(() => {
+    // If we're on Fill and navigation just started (returnToPanel set), don't update prevView yet.
+    // Once we've left Fill (currentView !== 'fill'), allow updates so prevView becomes 'files'.
+    const onFill = p.currentView === 'fill'
+    const justStarted = returnToPanel !== null && navInProgressRef.current === false
+    if (onFill && justStarted) {
+      navInProgressRef.current = true
+      return
+    }
+    // We're either not on Fill, or navigation already in progress (we're on Files or returning)
+    if (navInProgressRef.current && p.currentView !== 'fill') {
+      // We've reached Files, allow prevView to update
+      navInProgressRef.current = false
+    }
+    setPrevView(p.currentView)
+  }, [p.currentView, returnToPanel])
   const beforeSource = editing ? history.undo[editing.index]?.at(-1) : undefined
   const editingPanel = editing?.panel
   useEffect(() => {
@@ -178,6 +238,9 @@ export default function GenerateArticle(p: Props) {
   frameRef.current = frame
   const latestHistory = useRef(history)
   latestHistory.current = history
+  // the latest panels for queued work (hiding/restoring from the board updates the Fill tab too)
+  const latestPanels = useRef(p.panels)
+  latestPanels.current = p.panels
   const cells = Array.from({ length: panelCount(layout) }, (_, i) => p.panels[i] ?? null)
 
   // Client-side clock (the server only reports status changes).
@@ -196,6 +259,30 @@ export default function GenerateArticle(p: Props) {
   // Only the current board has an object URL: release each one when it is replaced (and on leave).
   const boardUrl = board?.url
   useEffect(() => () => { if (boardUrl) URL.revokeObjectURL(boardUrl) }, [boardUrl])
+
+  // Restore board from project import when GenerateArticle mounts
+  useEffect(() => {
+    if (p.restoredBoard && !board) {
+      const { blob, filename, cost, seed, sources, rects, frame } = p.restoredBoard
+      const [rows, cols] = parseLayout(p.prefs.layout)
+      const panelW = rects[0]?.w ?? 512
+      const panelH = rects[0]?.h ?? 512
+      const visible = sources.map((src) => src.removed !== true)
+      const geometry = frameGeometry(p.prefs.layout, rows, cols, panelW, panelH, frame, (i) => visible[i])
+      showBoard(
+        boardFrom(blob, filename, {
+          ...geometry,
+          sources,
+          frame,
+          cost,
+          seed,
+        }),
+        p.restoredHistory ?? emptyHistory(rects.length)
+      )
+      setTab('board')
+      p.onBoardRestored?.()
+    }
+  }, [p.restoredBoard, board])
 
   function showBoard(next: Board, nextHistory: History = latestHistory.current) {
     latestBoard.current = next
@@ -217,6 +304,13 @@ export default function GenerateArticle(p: Props) {
   function boardFrom(blob: Blob, filename: string, base: Omit<Board, 'blob' | 'url' | 'filename'>): Board {
     const stem = filename.replace(/\.[a-z]+$/, '')
     return { ...base, blob, url: URL.createObjectURL(blob), filename: `${stem}.${blobExt(blob)}` }
+  }
+
+  /** The board geometry for a set of sources: the frame style plus which slots are on the board. */
+  function geometryFor(base: Board, sources: PanelSource[]): BoardGeometry {
+    const mode = base.frame.adjust.emptyMode
+    return restyleGeometry(base, base.frame,
+      mode === 'kept' ? undefined : (i) => !sources[i]?.empty && !sources[i]?.removed)
   }
 
   /** Start a job and follow it; `finish` turns the result into the next board. */
@@ -282,15 +376,20 @@ export default function GenerateArticle(p: Props) {
       setStatus({ kind: 'error', text: keyMissing })
       return
     }
-    const fixedPanels = cells.flatMap((file, i) => (file ? [i + 1] : []))
+    // Only the visitor's own panels (fixed: true) are kept for the next generation.
+    // Panels generated by a previous run are NOT user panels: they must be replaced by
+    // the new answer (keeping them made every panel reuse the old pictures, and the
+    // new cells were then cropped from the wrong place — all showing panel 1).
+    const fixedCells = cells.map((cell) => (cell?.fixed ? cell : null))
+    const fixedPanels = fixedCells.flatMap((cell, i) => (cell ? [i + 1] : []))
     if (fixedPanels.length === cells.length) {
       setStatus({ kind: 'error', text: 'Leave at least one panel empty for the model to draw.' })
       return
     }
-    const snapshot = { plan, cells: [...cells], format: outputFormat, frame }
+    const snapshot = { plan, cells: fixedCells, format: outputFormat, frame }
     setEditing(null)
     await runJob(async () => {
-      const guide = fixedPanels.length ? await composeGuide(plan, cells) : null
+      const guide = fixedPanels.length ? await composeGuide(plan, fixedCells) : null
       return api.generate({
         provider, prompt: p.prompt, model: chosenModel, aspectRatio: plan.boardAspect, layout: plan.genLayout,
         resolution, outputFormat, seed: seed.trim(), files: p.files, apiKey: p.apiKey.trim(), fixedPanels, guide,
@@ -301,8 +400,21 @@ export default function GenerateArticle(p: Props) {
       debugSave(id, [{ name: 'board.png', blob: composed }], {
         plan: snapshot.plan, board: { width: layout.width, height: layout.height }, rects: layout.rects,
         // where each panel was taken from (generated ones: the cell cut from the model's answer)
-        sources: layout.sources.map((src, i) => ({ panel: i + 1, own: snapshot.cells[i] !== null, rect: src.rect })),
+        sources: layout.sources.map((src, i) => ({ panel: i + 1, own: snapshot.cells[i]?.fixed ?? false, rect: src.rect })),
       })
+      // Populate cells with generated panels (non-fixed) so they appear in Fill tab
+      // For generated panels, crop each panel from the model's answer blob
+      const nextCells = await Promise.all(layout.sources.map(async (src, i) => {
+        const existing = snapshot.cells[i]
+        if (existing?.fixed) {
+          // Keep user-fixed panel with its framing
+          return { src: existing.src, x: existing.x, y: existing.y, fixed: true } as Panel
+        }
+        // Generated panel: crop this panel's region from the model's answer
+        const panelBlob = await cropPanel(blob, src.rect)
+        return { src: panelBlob, x: 0.5, y: 0.5, fixed: false } as Panel
+      }))
+      p.setPanels(nextCells)
       showBoard(boardFrom(composed, info.filename, { ...layout, frame: snapshot.frame, cost: info.cost, seed: info.seed }),
         emptyHistory(layout.rects.length))
       setTab('board')
@@ -319,6 +431,29 @@ export default function GenerateArticle(p: Props) {
     }
   }
 
+  function handleManageFiles(index: number) {
+    // Remember which panel we were editing, so we can reopen it after Files
+    setReturnToPanel(index)
+    // Close the editor first
+    setEditing(null)
+    // Navigate to Files page
+    window.location.hash = '#files'
+  }
+
+  // When returning from Files page, reopen the retouch editor for the saved panel.
+  // Only trigger on transition from 'files' -> 'fill' (not when navigating away to Files).
+  useEffect(() => {
+    const comingFromFiles = prevView === 'files' && p.currentView === 'fill'
+    if (comingFromFiles && returnToPanel !== null && board && !editing) {
+      // Small delay to ensure the transition has completed
+      const timer = window.setTimeout(() => {
+        void openEditor(returnToPanel)
+        setReturnToPanel(null)
+      }, 100)
+      return () => window.clearTimeout(timer)
+    }
+  }, [returnToPanel, board, editing, p.currentView, prevView])
+
   async function onEdit(edit: PanelEdit) {
     if (!board || !editing || running) return
     if (!p.apiKey.trim() && !fakeModel) {
@@ -326,9 +461,13 @@ export default function GenerateArticle(p: Props) {
       return
     }
     const { index } = editing
+    // Prepare references: global attached files + compressed storyboard
+    const references = p.files
+    const storyboard = await compressImage(board.blob)
     await runJob(() => api.edit({
       provider, instruction: edit.instruction, model: chosenModel, resolution, outputFormat,
       panel: edit.panel, marked: edit.marked, area: edit.area, markColor: edit.color, apiKey: p.apiKey.trim(),
+      references, storyboard,
     }), `Retouching panel ${index + 1}…`, (blob, info, id) => queue(async () => {
       const base = latestBoard.current
       if (!base) return
@@ -405,7 +544,8 @@ export default function GenerateArticle(p: Props) {
         const base = latestBoard.current
         const style = frameRef.current
         if (!base || sameFrame(base.frame, style)) return
-        const geometry = restyleGeometry(base, style)
+        const geometry = restyleGeometry(base, style,
+          style.adjust.emptyMode === 'kept' ? undefined : (i) => !base.sources[i]?.empty && !base.sources[i]?.removed)
         showBoard(boardFrom(await renderBoard(geometry, base.sources, outputFormat, style), base.filename,
           { ...base, ...geometry, frame: style }))
       })
@@ -414,13 +554,21 @@ export default function GenerateArticle(p: Props) {
   }, [frame, boardStyle])
 
   // Moving a framing redraws the current board in place (no model call, not a retouch).
+  // Also syncs the framing to the Fill tab's cells.
   function onFrame(index: number, x: number, y: number) {
     void queue(async () => {
       const base = latestBoard.current
       if (!base) return
       const sources = [...base.sources]
       sources[index] = { ...sources[index], x, y }
-      showBoard(boardFrom(await renderBoard(base, sources, outputFormat, base.frame), base.filename, { ...base, sources }))
+      const nextBoard = boardFrom(await renderBoard(base, sources, outputFormat, base.frame), base.filename, { ...base, sources })
+      showBoard(nextBoard)
+      // Sync to Fill tab cells
+      const nextCells = [...p.panels]
+      if (nextCells[index]) {
+        nextCells[index] = { ...nextCells[index]!, x, y }
+        p.setPanels(nextCells)
+      }
     })
   }
 
@@ -444,6 +592,43 @@ export default function GenerateArticle(p: Props) {
     try {
       const blob = await canvasToBlob(await renderPanel(board.sources[index], board.rects[index].w, board.rects[index].h), outputFormat)
       saveBlob(blob, `${board.filename.replace(/\.[a-z]+$/, '')}_panel-${index + 1}.${blobExt(blob)}`)
+    } catch (e) {
+      setStatus({ kind: 'error', text: (e as Error).message })
+    }
+  }
+
+  async function exportProject() {
+    if (!board) return
+    try {
+      setStatus({ kind: 'info', text: 'Preparing project export…' })
+      const state: ProjectState = {
+        prompt: p.prompt,
+        provider: p.prefs.provider,
+        model: p.prefs.provider === 'openai' ? p.prefs.openaiModel : p.prefs.model,
+        layout,
+        aspectRatio,
+        resolution,
+        outputFormat,
+        seed,
+        panels: p.panels,
+        board: {
+          blob: board.blob,
+          filename: board.filename,
+          cost: board.cost,
+          seed: board.seed,
+          width: board.width,
+          height: board.height,
+          sources: board.sources,
+          rects: board.rects,
+          frame: board.frame,
+        },
+        history,
+        referenceFiles: p.files,
+        frame: p.prefs.frame,
+      }
+      const sgb = await serializeProject(state)
+      downloadSGB(sgb)
+      setStatus({ kind: 'success', text: 'Project exported.' })
     } catch (e) {
       setStatus({ kind: 'error', text: (e as Error).message })
     }
@@ -523,7 +708,63 @@ export default function GenerateArticle(p: Props) {
 
       <label>Panels</label>
       <PanelGrid layout={layout} panelAspect={aspectRatio} panels={cells} setPanels={p.setPanels}
-        maxBytes={maxBytes} disabled={running} notify={p.notify} />
+        maxBytes={maxBytes} disabled={running} notify={p.notify}
+        onFrame={(index, x, y) => {
+          // Sync framing from Fill tab to board.sources
+          void queue(async () => {
+            const base = latestBoard.current
+            if (!base) return
+            const sources = [...base.sources]
+            sources[index] = { ...sources[index], x, y }
+            showBoard(boardFrom(await renderBoard(base, sources, outputFormat, base.frame), base.filename,
+              { ...base, sources }))
+          })
+        }}
+        onSwap={(a, b) => {
+          // Two panels changed places in the Fill tab: swap their sources on the board too.
+          void queue(async () => {
+            const base = latestBoard.current
+            if (!base) return
+            const sources = [...base.sources]
+            const moved = sources[a]
+            sources[a] = sources[b]
+            sources[b] = moved
+            const geometry = geometryFor(base, sources)
+            showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
+              { ...base, ...geometry, sources }))
+          })
+        }}
+        onRemove={(index) => {
+          // A panel was removed in the Fill tab: the board leaves its slot empty (transparent),
+          // and that panel's retouch history no longer applies. The slot shows the red X button
+          // (not hatched yet: pressing it marks the slot as removed from the final board).
+          void queue(async () => {
+            const base = latestBoard.current
+            if (!base) return
+            const sources = [...base.sources]
+            sources[index] = { ...sources[index], empty: true, removed: false }
+            const history = withoutPanel(latestHistory.current, index)
+            const geometry = geometryFor(base, sources)
+            showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
+              { ...base, ...geometry, sources }), history)
+          })
+        }}
+        onAdd={(index, panel) => {
+          // A picture was put into a panel in the Fill tab: the board shows it again.
+          void queue(async () => {
+            const base = latestBoard.current
+            if (!base) return
+            const bitmap = await bitmapOf(panel.src)
+            const sources = [...base.sources]
+            sources[index] = {
+              image: panel.src, rect: { x: 0, y: 0, w: bitmap.width, h: bitmap.height },
+              x: panel.x, y: panel.y, empty: false, removed: false,
+            }
+            const geometry = geometryFor(base, sources)
+            showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
+              { ...base, ...geometry, sources }))
+          })
+        }} />
 
       <div className="summary-line">
         <span className="ratio-label" title="Panel shape preview"><RatioPreview ratio={aspectRatio} />Panels {aspectRatio}</span>
@@ -561,14 +802,69 @@ export default function GenerateArticle(p: Props) {
         <div className={`tab-pane result${active === 'board' ? '' : ' is-off'}`} id="tab-board" role="tabpanel" aria-hidden={active !== 'board'}>
           <BoardView layout={board.layout} width={plain.width} height={plain.height} rects={plain.rects} radius={plain.radius}
             sources={board.sources} editing={editing?.index ?? null} running={running}
-            onRetouch={(i, from) => void openEditor(i, from)} onFrame={onFrame} />
+            onRetouch={(i, from) => void openEditor(i, from)} onFrame={onFrame}
+            onRestore={(index) => {
+              // Bring a removed slot back: the board shows the panel again and the Fill tab gets it back too.
+              void queue(async () => {
+                const base = latestBoard.current
+                if (!base) return
+                const source = base.sources[index]
+                if (!source || (!source.empty && !source.removed)) return
+                const sources = [...base.sources]
+                sources[index] = { ...source, empty: false, removed: false }
+                const own = source.image instanceof File
+                const src = own ? source.image : await cropPanel(source.image, source.rect)
+                const nextCells = [...latestPanels.current]
+                nextCells[index] = { src, x: source.x, y: source.y, fixed: own }
+                latestPanels.current = nextCells
+                p.setPanels(nextCells)
+                const geometry = geometryFor(base, sources)
+                showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
+                  { ...base, ...geometry, sources }))
+              })
+            }}
+            onHide={(index) => {
+              // Hide a panel from the board: its slot becomes empty (transparent) in the Storyboard
+              // and Frame tabs, and the Fill tab shows the empty placeholder. The source is kept,
+              // so the red X in the empty slot brings it back.
+              void queue(async () => {
+                const base = latestBoard.current
+                if (!base) return
+                const source = base.sources[index]
+                if (!source || source.empty) return
+                const sources = [...base.sources]
+                sources[index] = { ...source, empty: true, removed: false }
+                const nextCells = [...latestPanels.current]
+                nextCells[index] = null
+                latestPanels.current = nextCells
+                p.setPanels(nextCells)
+                const geometry = geometryFor(base, sources)
+                showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
+                  { ...base, ...geometry, sources }), withoutPanel(latestHistory.current, index))
+              })
+            }}
+            onRemoveSlot={(index) => {
+              // Remove the empty slot itself: the board background shows through (no gray hole), and the
+              // slot can be brought back with the restore button. The source is kept.
+              void queue(async () => {
+                const base = latestBoard.current
+                if (!base) return
+                const source = base.sources[index]
+                if (!source || !source.empty || source.removed) return
+                const sources = [...base.sources]
+                sources[index] = { ...source, removed: true }
+                const geometry = geometryFor(base, sources)
+                showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
+                  { ...base, ...geometry, sources }))
+              })
+            }} />
           <p className="hint">
             {board.width}×{board.height} · {formatBytes(board.blob.size)}
             {board.cost > 0 && <> · ${board.cost.toFixed(4)}</>}
             {board.seed !== null && <> · seed {board.seed}</>}
             {history.order.length > 0 && <> · {history.order.length} retouch{history.order.length > 1 ? 'es' : ''}</>}
           </p>
-          <p className="hint board-help">Drag a panel to move its framing.<br />On each panel: the pencil retouches a detail.</p>
+          <p className="hint board-help">Drag a panel to move its framing.<br />On each panel: the pencil retouches a detail, the X hides it. In an empty slot, the X removes the slot; the + brings it back.</p>
 
           {confirmReplace && (
             <Modal title="Replace the storyboard?" busy={false} small onClose={() => setConfirmReplace(false)}>
@@ -587,7 +883,10 @@ export default function GenerateArticle(p: Props) {
               canRedo={(history.redo[editing.index]?.length ?? 0) > 0}
               onApply={(edit) => void onEdit(edit)} onCancel={() => void onCancel()}
               onUndo={() => void stepPanel(editing.index, true)} onRedo={() => void stepPanel(editing.index, false)}
-              onClose={() => setEditing(null)} />
+              onClose={() => setEditing(null)}
+              retouchFiles={p.files}
+              maxFiles={maxFiles}
+              onManageFiles={() => handleManageFiles(editing.index)} />
           )}
 
           <ul className="actions fixed">
@@ -622,16 +921,24 @@ export default function GenerateArticle(p: Props) {
           <div className="download-section">
             <label>Download</label>
             <ul className="actions fixed">
-              {board.rects.map((_, i) => (
-                <li key={i}>
-                  <button type="button" className="primary icon solid fa-download" aria-label={`Download panel ${i + 1}`}
-                    title={`Download panel ${i + 1}`} onClick={() => setPendingDownload({ label: `panel ${i + 1}`, run: () => void downloadPanel(i) })}>{i + 1}</button>
-                </li>
-              ))}
+              {board.rects.map((_, i) => {
+                const empty = !p.panels[i]
+                return (
+                  <li key={i}>
+                    <button type="button" className="primary icon solid fa-download" disabled={empty}
+                      aria-label={`Download panel ${i + 1}`}
+                      title={empty ? `Panel ${i + 1} is empty` : `Download panel ${i + 1}`}
+                      onClick={() => setPendingDownload({ label: `panel ${i + 1}`, run: () => void downloadPanel(i) })}>{i + 1}</button>
+                  </li>
+                )
+              })}
             </ul>
           </div>
           <ul className="actions fixed">
-            <li><button type="button" className="primary icon solid fa-download" onClick={() => setPendingDownload({ label: 'full storyboard', run: () => saveBlob(board.blob, board.filename) })}>Full</button></li>
+            <li><button type="button" className="primary icon solid fa-download" title="Download full storyboard" onClick={() => setPendingDownload({ label: 'full storyboard', run: () => saveBlob(board.blob, board.filename) })}>Full</button></li>
+            <li><button type="button" className="primary icon solid fa-file-export" aria-label="Export project" title="Export project (.sgb)"
+            // <li><button type="button" className="icon solid fa-file-export" aria-label="Export project" title="Export project (.sgb)"
+              onClick={() => void exportProject()}>Export</button></li>
           </ul>
           {pendingDownload && (
             <Modal title={`Download ${pendingDownload.label}`} busy={false} small className="share-modal" onClose={() => setPendingDownload(null)}>

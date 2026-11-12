@@ -241,7 +241,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def api_edit(request: Request) -> dict:
         ip = client_ip(request.scope)
         check_lock(ip)
-        form = await read_form(request, 2)
+        # +2 for panel and marked, +max_files for references, +1 for storyboard
+        form = await read_form(request, 2 + core.MAX_UPLOAD_FILES + 1)
         try:
             fields = text_fields(form, EDIT_FIELDS)
             provider = core.validate_provider(fields["provider"])
@@ -267,7 +268,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise ValueError("The marked panel must have the same size as the panel.")
             # OpenAI takes any WxH: ask for the panel's exact shape, so the answer lines up with it
             req.aspect_ratio = f"{size[0]}:{size[1]}" if provider == "openai" else core.edit_aspect_ratio(*size)
+            # Start with panel and marked panel
             req.uploads = [panel, marked]
+            # Add reference files (images and text) sent with the retouch
+            references = await read_uploads(form.getlist("references"))
+            req.uploads.extend(references)
+            # Add compressed storyboard if provided
+            storyboard = form.get("storyboard")
+            if storyboard is not None:
+                sb_uploads = await read_uploads([storyboard])
+                if sb_uploads and sb_uploads[0].kind == "image":
+                    req.uploads.append(sb_uploads[0])
         except ValueError as exc:
             raise _error(400, str(exc)) from exc
         finally:

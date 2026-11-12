@@ -2,8 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { parseLayout, parseRatio, previewBoard, restyleGeometry, type PanelSource } from '../board'
 import ColorPicker from './ColorPicker'
 import {
-  BACKGROUNDS, CORNERS, DEFAULT_FRAME, frameGeometry, LINE_KINDS, NUMBER_SHAPES, presetStyle, PRESETS, TITLE_FONTS, TITLE_MAX,
-  type Align, type Background, type Corner, type FrameGeometry, type FrameStyle, type LineKind, type NumberShape, type TitleFont,
+  BACKGROUNDS, CORNERS, DEFAULT_ADJUST, DEFAULT_FRAME, frameGeometry, LINE_KINDS, NUMBER_SHAPES, presetStyle, PRESETS, TEXTURES, TITLE_FONTS, TITLE_MAX,
+  type Adjustments, type Align, type AlignX, type AlignY, type Background, type Corner, type FrameGeometry, type FrameStyle, type LineKind,
+  type NumberShape, type TextureId, type TitleFont,
 } from '../frame'
 
 interface Props {
@@ -16,7 +17,20 @@ interface Props {
 }
 
 const PREVIEW_WIDTH = 720
-const SECTIONS = ["Looks", "Background", "Outer frame", "Title", "Panel border", "Panel numbers"]
+const SECTIONS = ["Looks", "Background", "Outer frame", "Title", "Panel border", "Panel numbers", "Adjustments"]
+
+/** Default value of each slider: three quick clicks put it back there. */
+const SLIDER_DEFAULTS: Record<string, number> = {
+  'fr-angle': DEFAULT_FRAME.angle, 'fr-margin': DEFAULT_FRAME.margin, 'fr-gap': DEFAULT_FRAME.gap,
+  'fr-ow': DEFAULT_FRAME.outerWidth, 'fr-or': DEFAULT_FRAME.outerRadius,
+  'fr-ts': DEFAULT_FRAME.titleSize, 'fr-tg': DEFAULT_FRAME.titleOffset,
+  'fr-bw': DEFAULT_FRAME.borderWidth, 'fr-r': DEFAULT_FRAME.radius, 'fr-sh': DEFAULT_FRAME.shadow,
+  'fr-nz': DEFAULT_FRAME.numberSize,
+  'fr-rot': DEFAULT_ADJUST.rotation, 'fr-sepia': DEFAULT_ADJUST.sepia, 'fr-vhs': DEFAULT_ADJUST.vhs,
+  'fr-scan': DEFAULT_ADJUST.scanlines, 'fr-gray': DEFAULT_ADJUST.grayscale, 'fr-grain': DEFAULT_ADJUST.grain,
+  'fr-vig': DEFAULT_ADJUST.vignette, 'fr-con': DEFAULT_ADJUST.contrast, 'fr-sat': DEFAULT_ADJUST.saturation,
+  'fr-blur': DEFAULT_ADJUST.blur, 'fr-sharp': DEFAULT_ADJUST.sharpen,
+}
 
 interface FieldProps { id: string; label: string; disabled?: boolean; wide?: 2 | 3 }
 
@@ -29,11 +43,23 @@ function Field(p: FieldProps & { children: ReactNode; value?: ReactNode }) {
   )
 }
 
-function Slider(p: FieldProps & { value: number; min: number; max: number; step: number; unit?: string; onChange: (v: number) => void }) {
+function Slider(p: FieldProps & { value: number; min: number; max: number; step: number; unit?: string; defaultValue?: number; onChange: (v: number) => void }) {
+  // Three quick clicks on the slider put it back to its default (hard to hit an exact value by dragging).
+  const clicks = useRef<number[]>([])
+  const defaultValue = p.defaultValue ?? SLIDER_DEFAULTS[p.id] ?? p.value
+  const onClick = () => {
+    const now = Date.now()
+    clicks.current = clicks.current.filter((t) => now - t < 600)
+    clicks.current.push(now)
+    if (clicks.current.length >= 3) {
+      clicks.current = []
+      p.onChange(defaultValue)
+    }
+  }
   return (
     <Field id={p.id} label={p.label} disabled={p.disabled} value={`${Number(p.value.toFixed(2))}${p.unit ?? ''}`}>
       <input id={p.id} type="range" min={p.min} max={p.max} step={p.step} value={p.value} disabled={p.disabled}
-        onChange={(e) => p.onChange(Number(e.target.value))} />
+        onClick={onClick} onChange={(e) => p.onChange(Number(e.target.value))} />
     </Field>
   )
 }
@@ -64,11 +90,11 @@ function Toggle(p: { label: string; title: string; on: boolean; disabled?: boole
 }
 
 // One card = one grid of three columns; controls that do not apply stay in place, dimmed, so nothing jumps.
-function Card(p: { index: number; card: number; title: string; children: ReactNode }) {
+function Card(p: { index: number; card: number; title: string; dense?: boolean; children: ReactNode }) {
   return (
     <div className={`tab-pane frame-card${p.card === p.index ? '' : ' is-off'}`} role="group" aria-label={p.title}
       aria-hidden={p.card !== p.index}>
-      <div className="frame-fields">{p.children}</div>
+      <div className={`frame-fields${p.dense ? ' is-dense' : ''}`}>{p.children}</div>
     </div>
   )
 }
@@ -79,7 +105,10 @@ export default function FrameTab({ style, onChange, layout, aspectRatio, board }
   const view = useRef<HTMLCanvasElement>(null)
   const [card, setCard] = useState(0)
   const set = <K extends keyof FrameStyle>(key: K, value: FrameStyle[K]) => onChange({ ...style, [key]: value })
-  const patterned = style.background !== 'solid'
+  const setAdj = <K extends keyof Adjustments>(key: K, value: Adjustments[K]) =>
+    onChange({ ...style, adjust: { ...style.adjust, [key]: value } })
+  const textured = style.background === 'texture'
+  const patterned = style.background !== 'solid' && !textured
   const hasTitle = style.title.trim() !== ''
 
   useEffect(() => {
@@ -88,7 +117,12 @@ export default function FrameTab({ style, onChange, layout, aspectRatio, board }
     let geometry: FrameGeometry
     let sources: PanelSource[] | null = null
     if (board) {
-      geometry = restyleGeometry(board, style)
+      geometry = restyleGeometry(board, style,
+        // Only filter out REMOVED panels when emptyMode is not 'kept'.
+        // EMPTY panels (gray placeholders) should ALWAYS remain visible as intentional
+        // visual feedback. The user explicitly clicks the second X to mark as REMOVED,
+        // at which point emptyMode (reflow/rows) can reorganize the layout.
+        style.adjust.emptyMode === 'kept' ? undefined : (i) => !board.sources[i]?.removed)
       sources = board.sources
     } else {
       const [rows, cols] = parseLayout(layout)
@@ -138,7 +172,9 @@ export default function FrameTab({ style, onChange, layout, aspectRatio, board }
             <Card index={1} card={card} title="Background">
               <Choice id="fr-bg" label="Type" value={style.background} options={BACKGROUNDS}
                 onChange={(v: Background) => set('background', v)} />
-              <ColorField id="fr-c1" label="Color" value={style.color1} onChange={(v) => set('color1', v)} />
+              <Choice id="fr-tex" label="Texture" disabled={!textured} value={style.texture} options={TEXTURES}
+                onChange={(v: TextureId) => set('texture', v)} />
+              <ColorField id="fr-c1" label="Color" disabled={textured} value={style.color1} onChange={(v) => set('color1', v)} />
               <ColorField id="fr-c2" label={style.background === 'linear' || style.background === 'radial' ? 'Second color' : 'Pattern color'}
                 disabled={!patterned} value={style.color2} onChange={(v) => set('color2', v)} />
               <Slider id="fr-angle" label="Direction" value={style.angle} min={0} max={360} step={5} unit="°"
@@ -214,6 +250,38 @@ export default function FrameTab({ style, onChange, layout, aspectRatio, board }
                 onChange={(v) => set('numberColor', v)} />
               <ColorField id="fr-nt" label="Number color" disabled={!style.numbers} value={style.numberText}
                 onChange={(v) => set('numberText', v)} />
+            </Card>
+
+            <Card index={6} card={card} title="Adjustments" dense>
+              <Slider id="fr-rot" label="Rotation" value={style.adjust.rotation} min={-180} max={180} step={1} unit="°"
+                onChange={(v) => setAdj('rotation', v)} />
+              <Choice id="fr-ax" label="Horizontal" value={style.adjust.alignX}
+                options={{ left: 'Left', center: 'Center', right: 'Right' }} onChange={(v: AlignX) => setAdj('alignX', v)} />
+              <Choice id="fr-ay" label="Vertical" value={style.adjust.alignY}
+                options={{ top: 'Top', middle: 'Middle', bottom: 'Bottom' }} onChange={(v: AlignY) => setAdj('alignY', v)} />
+              <Choice id="fr-empty" label="Empty slots" value={style.adjust.emptyMode}
+                options={{ kept: 'Kept', reflow: 'Trimmed', rows: 'Rows' }}
+                onChange={(v: 'kept' | 'reflow' | 'rows') => setAdj('emptyMode', v)} />
+              <Slider id="fr-sepia" label="Sepia" value={style.adjust.sepia} min={0} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('sepia', v)} />
+              <Slider id="fr-vhs" label="VHS" value={style.adjust.vhs} min={0} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('vhs', v)} />
+              <Slider id="fr-scan" label="Scanlines" value={style.adjust.scanlines} min={0} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('scanlines', v)} />
+              <Slider id="fr-gray" label="Black & white" value={style.adjust.grayscale} min={0} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('grayscale', v)} />
+              <Slider id="fr-grain" label="Film grain" value={style.adjust.grain} min={0} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('grain', v)} />
+              <Slider id="fr-vig" label="Vignette" value={style.adjust.vignette} min={0} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('vignette', v)} />
+              <Slider id="fr-con" label="Contrast" value={style.adjust.contrast} min={-100} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('contrast', v)} />
+              <Slider id="fr-sat" label="Saturation" value={style.adjust.saturation} min={-100} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('saturation', v)} />
+              <Slider id="fr-blur" label="Blur" value={style.adjust.blur} min={0} max={10} step={0.5} unit="px"
+                onChange={(v) => setAdj('blur', v)} />
+              <Slider id="fr-sharp" label="Sharpen" value={style.adjust.sharpen} min={0} max={100} step={1} unit="%"
+                onChange={(v) => setAdj('sharpen', v)} />
             </Card>
 
           </div>

@@ -8,6 +8,10 @@ import ModelArticle from './articles/ModelArticle'
 import AboutArticle from './articles/AboutArticle'
 import { loadPrefs, savePrefs, type Prefs, type Provider } from './prefs'
 import type { Panels } from './board'
+import type { SGBProject } from './project'
+import { deserializeProject } from './project'
+import type { PanelSource, Rect } from './board'
+import type { FrameStyle } from './frame'
 
 const ARTICLES = ['fill', 'files', 'model', 'about'] as const
 const NAV: { id: (typeof ARTICLES)[number]; label: string }[] = [
@@ -31,6 +35,24 @@ export default function App() {
   const [files, setFiles] = useState<File[]>([])
   const [panels, setPanels] = useState<Panels>([])
   const [prompt, setPrompt] = useState('')
+  // Restored board/history from project import (for GenerateArticle to pick up)
+  const [restoredBoard, setRestoredBoard] = useState<{
+    blob: Blob
+    filename: string
+    cost: number
+    seed: number | null
+    width: number
+    height: number
+    sources: PanelSource[]
+    rects: Rect[]
+    frame: FrameStyle
+  } | null>(null)
+  const [restoredHistory, setRestoredHistory] = useState<{
+    undo: PanelSource[][]
+    redo: PanelSource[][]
+    order: number[]
+    redoOrder: number[]
+  } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -52,6 +74,50 @@ export default function App() {
       return next
     })
   }, [])
+
+  // Handle project import (.sgb file) - always available regardless of active tab
+  const handleImportProject = useCallback((sgb: SGBProject) => {
+    try {
+      notify('info', 'Importing project…')
+      const restored = deserializeProject(sgb)
+
+      // Restore preferences (provider, model, layout, ratio, resolution, format, frame)
+      updatePrefs({
+        provider: restored.provider,
+        [restored.provider === 'openai' ? 'openaiModel' : 'model']: restored.model,
+        layout: restored.layout,
+        aspectRatio: restored.aspectRatio,
+        resolution: restored.resolution,
+        outputFormat: restored.outputFormat,
+        frame: restored.frame,
+      })
+
+      // Restore prompt
+      setPrompt(restored.prompt)
+
+      // Restore reference files (Files tab)
+      setFiles(restored.referenceFiles)
+
+      // Restore panels (Fill tab)
+      setPanels(restored.panels)
+
+      // Restore board and history for GenerateArticle
+      if (restored.board) {
+        setRestoredBoard(restored.board)
+        setRestoredHistory(restored.history)
+      } else {
+        setRestoredBoard(null)
+        setRestoredHistory(null)
+      }
+
+      // Navigate to Fill tab so GenerateArticle can restore the board if present
+      window.location.hash = '#fill'
+
+      notify('success', 'Project imported. Continue where you left off!')
+    } catch (e) {
+      notify('error', (e as Error).message)
+    }
+  }, [notify, updatePrefs, setPrompt, setFiles, setPanels, setRestoredBoard, setRestoredHistory])
 
   const article = (id: string, title: string | null, children: ReactNode) => (
     <article
@@ -169,10 +235,15 @@ export default function App() {
             <GenerateArticle
               meta={meta} prefs={prefs} updatePrefs={updatePrefs}
               prompt={prompt} setPrompt={setPrompt}
-              apiKey={apiKey} files={files} panels={panels} setPanels={setPanels} notify={notify}
+              apiKey={apiKey} files={files} setFiles={setFiles} panels={panels} setPanels={setPanels} notify={notify}
+              currentView={view.shown}
+              restoredBoard={restoredBoard}
+              restoredHistory={restoredHistory}
+              onBoardRestored={() => { setRestoredBoard(null); setRestoredHistory(null) }}
             />)}
           {article('files', 'Files',
-            <FilesArticle meta={meta} files={files} setFiles={setFiles} notify={notify} />)}
+            <FilesArticle meta={meta} files={files} setFiles={setFiles} notify={notify}
+              onImportProject={handleImportProject} />)}
           {article('model', 'Model',
             <ModelArticle
               meta={meta} provider={prefs.provider} setProvider={(provider) => updatePrefs({ provider })}

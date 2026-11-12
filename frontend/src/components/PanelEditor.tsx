@@ -35,6 +35,12 @@ interface Props {
   onUndo: () => void
   onRedo: () => void
   onClose: () => void
+  /** Files attached for this retouch (sent as references). */
+  retouchFiles?: File[]
+  /** Maximum number of files allowed (from server meta). */
+  maxFiles?: number
+  /** Called when the visitor wants to manage files for this retouch. */
+  onManageFiles?: () => void
 }
 
 // Retouch one panel: mark the area with a brush or a circle, describe the change.
@@ -159,16 +165,20 @@ export default function PanelEditor(p: Props) {
       marked: await canvasToBlob(marked, 'jpeg'),
       mask: buildMask(shapes, panel.width, panel.height, blend),
       instruction: instruction.trim(),
-      area: markArea(shapes, panel.width, panel.height),
+      area: blend === 'panel' ? [0, 0, 100, 100] : markArea(shapes, panel.width, panel.height),
       color,
       shapes,
     })
   }
 
-  const ready = shapes.length > 0 && instruction.trim().length > 0 && !running
+  const ready = (blend === 'panel' || shapes.length > 0) && instruction.trim().length > 0 && !running
   return (
     <Modal title={`Retouch panel ${number}`} busy={running} onClose={p.onClose} from={p.from}>
-      <p className="hint">Mark it, say what to change: only the lit part changes.</p>
+      <p className="hint">
+        {blend === 'panel'
+          ? 'The whole panel will change. Just describe what to change.'
+          : 'Mark it, say what to change: only the lit part changes.'}
+      </p>
       <div className="editor-tools">
         {([
           ['circle', 'icon fa-circle', 'Circle: everything inside'],
@@ -214,6 +224,16 @@ export default function PanelEditor(p: Props) {
               onKeyDown={(e) => { if (!running && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setColor(name) } }} />
           ))}
         </span>
+        {p.retouchFiles !== undefined && p.maxFiles !== undefined && p.onManageFiles && (
+          <span className="retouch-files" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span className={`file-count${p.retouchFiles.length >= p.maxFiles ? ' is-full' : ''}`}
+              style={{ fontSize: '0.85rem', fontWeight: 500 }}>
+              {p.retouchFiles.length}/{p.maxFiles}
+            </span>
+            <button type="button" className="tool-btn icon solid fa-cloud-upload-alt" aria-label="Manage reference files for this retouch"
+              title="Manage reference files for this retouch" disabled={running} onClick={p.onManageFiles} />
+          </span>
+        )}
       </div>
       <div ref={stage} className={`editor-stage${running ? ' is-running' : ''}`}>
         <div className="editor-wrap">

@@ -78,6 +78,10 @@ export interface EditInput {
   /** color of the marks on the marked panel (named in the prompt) */
   markColor: string
   apiKey: string
+  /** Optional reference files (images and text) to send with the retouch. */
+  references?: File[]
+  /** Optional compressed storyboard image to send as context. */
+  storyboard?: Blob
 }
 
 export class ApiError extends Error {
@@ -153,6 +157,10 @@ export const api = {
     form.append('mark_color', input.markColor)
     form.append('panel', input.panel, 'panel.jpg')
     form.append('marked', input.marked, 'panel-marked.jpg')
+    if (input.references) {
+      for (const file of input.references) form.append('references', file, file.name)
+    }
+    if (input.storyboard) form.append('storyboard', input.storyboard, 'storyboard.jpg')
     return startJob('/api/edit', form, input.apiKey)
   },
 
@@ -204,11 +212,15 @@ export function formatBytes(bytes: number): string {
 
 const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
 const TEXT_EXTS = ['.txt', '.md']
-export const ACCEPTED_FILES = [...IMAGE_EXTS, ...TEXT_EXTS].join(',')
+const PROJECT_EXTS = ['.sgb']
+export const ACCEPTED_FILES = [...IMAGE_EXTS, ...TEXT_EXTS, ...PROJECT_EXTS].join(',')
 
-export function fileKind(file: File): 'image' | 'text' | null {
+export type FileKind = 'image' | 'text' | 'project' | null
+
+export function fileKind(file: File): FileKind {
   const name = file.name.toLowerCase()
   if (IMAGE_EXTS.some((ext) => name.endsWith(ext))) return 'image'
   if (TEXT_EXTS.some((ext) => name.endsWith(ext))) return 'text'
+  if (PROJECT_EXTS.some((ext) => name.endsWith(ext))) return 'project'
   return null
 }

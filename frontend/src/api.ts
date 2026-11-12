@@ -176,6 +176,23 @@ export const api = {
     await request(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
   },
 
+  async logAction(action: string, details?: string, durationMs?: number, sessionId?: string): Promise<void> {
+    try {
+      await request('/api/actions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action,
+          details: details ?? '',
+          duration_ms: durationMs !== undefined ? Math.round(durationMs) : '',
+          session_id: sessionId ?? '',
+        }),
+      })
+    } catch {
+      // Non-blocking telemetry
+    }
+  },
+
   async image(jobId: string): Promise<Blob> {
     return (await request(`/api/jobs/${encodeURIComponent(jobId)}/image`)).blob()
   },

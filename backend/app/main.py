@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import UploadFile
 
 from . import core, fakemodel
-from .audit import GenerationLog, salted_hash
+from .audit import ActionLog, GenerationLog, salted_hash
 from .debugdump import DebugDump
 from .jobs import Job, JobLimitError, JobStore
 from .security import (
@@ -71,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     auth_lock = FailureLock(settings.auth_failures_before_lock,
                             settings.auth_failure_window_s, settings.auth_lock_s)
     gen_log = GenerationLog(settings.data_dir)
+    action_log = ActionLog(settings.data_dir)
     debug = DebugDump(settings.debug_dump_dir, settings.public_url)
     # development only, never with a PUBLIC_URL (always set on the server)
     fake_model = settings.fake_model and not settings.public_url
@@ -134,6 +135,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "generate_per_day": settings.generate_per_day,
             },
         }
+
+    @app.post("/api/actions")
+    async def api_log_action(request: Request) -> dict:
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise _error(400, "Invalid JSON.") from exc
+        if not isinstance(body, dict):
+            raise _error(400, "Invalid request.")
+        action = str(body.get("action", ""))[:100]
+        details = str(body.get("details", ""))[:1000]
+        session_id = str(body.get("session_id", ""))[:64]
+        duration_ms = body.get("duration_ms", "")
+        ip = client_ip(request.scope)
+        action_log.append({
+            "client_id": client_id(ip),
+            "session_id": session_id,
+            "action": action,
+            "details": details,
+            "duration_ms": duration_ms,
+        })
+        return {"ok": True}
 
     # ------------------------------------------------------------------
     # Generate

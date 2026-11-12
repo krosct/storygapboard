@@ -19,6 +19,7 @@ import FrameTab from '../components/FrameTab'
 import FullView from '../components/FullView'
 import WaitButton from '../components/WaitButton'
 import { serializeProject, downloadSGB, type ProjectState } from '../project'
+import { recordAction, generateTimelinePdf } from '../timeline'
 
 interface Props {
   meta: Meta | null
@@ -26,6 +27,8 @@ interface Props {
   updatePrefs: (patch: Partial<Prefs>) => void
   prompt: string
   setPrompt: (value: string) => void
+  style: string
+  setStyle: (value: string) => void
   apiKey: string
   files: File[]
   setFiles: (files: File[]) => void
@@ -165,6 +168,39 @@ export default function GenerateArticle(p: Props) {
   const [editing, setEditing] = useState<{ index: number; panel: HTMLCanvasElement; from?: DOMRect } | null>(null)
   const [confirmReplace, setConfirmReplace] = useState(false)
   const [tab, setTab] = useState<'generate' | 'frame' | 'board' | 'download'>('generate')
+  const prevTabRef = useRef<'generate' | 'frame' | 'board' | 'download'>('generate')
+  const storyboardModifiedRef = useRef<boolean>(false)
+  const frameModifiedRef = useRef<boolean>(false)
+
+  // Track tab changes to record storyboard snapshot after modifications (retouch / hide / remove) or frame style changes
+  useEffect(() => {
+    const prev = prevTabRef.current
+    prevTabRef.current = tab
+
+    if (prev === 'board' && tab !== 'board' && storyboardModifiedRef.current) {
+      storyboardModifiedRef.current = false
+      const currentBoard = latestBoard.current
+      if (currentBoard) {
+        void recordAction(
+          'Storyboard Updated',
+          'Storyboard layout modified (panel retouched or hidden).',
+          currentBoard.blob
+        )
+      }
+    }
+
+    if (prev === 'frame' && tab !== 'frame' && frameModifiedRef.current) {
+      frameModifiedRef.current = false
+      const currentBoard = latestBoard.current
+      if (currentBoard) {
+        void recordAction(
+          'Frame Customization Changed',
+          'Updated board frame styling and decorations.',
+          currentBoard.blob
+        )
+      }
+    }
+  }, [tab])
   const [fullView, setFullView] = useState(false)
   // what the visitor asked to download: the share notice (with a 5 s wait) comes first
   const [pendingDownload, setPendingDownload] = useState<{ label: string; run: () => void } | null>(null)
@@ -382,6 +418,24 @@ export default function GenerateArticle(p: Props) {
     // new cells were then cropped from the wrong place — all showing panel 1).
     const fixedCells = cells.map((cell) => (cell?.fixed ? cell : null))
     const fixedPanels = fixedCells.flatMap((cell, i) => (cell ? [i + 1] : []))
+    const trimmedPrompt = p.prompt.trim()
+    const trimmedStyle = p.style.trim()
+    const hasFixed = fixedPanels.length > 0
+
+    // Validation rules (skipped when using simulated fake model in development):
+    // 1. If A (prompt), B (style), and C (panels) are empty -> error
+    // 2. If C has at least one image, at least one of A or B must be filled (cannot both be empty)
+    if (!fakeModel) {
+      if (!trimmedPrompt && !trimmedStyle && !hasFixed) {
+        setStatus({ kind: 'error', text: 'Please provide a story description, an artistic style, or at least one panel.' })
+        return
+      }
+      if (hasFixed && !trimmedPrompt && !trimmedStyle) {
+        setStatus({ kind: 'error', text: 'When panels are provided, please specify a story prompt or an artistic style (or both).' })
+        return
+      }
+    }
+
     if (fixedPanels.length === cells.length) {
       setStatus({ kind: 'error', text: 'Leave at least one panel empty for the model to draw.' })
       return
@@ -390,11 +444,30 @@ export default function GenerateArticle(p: Props) {
     setEditing(null)
     await runJob(async () => {
       const guide = fixedPanels.length ? await composeGuide(plan, fixedCells) : null
+      let styleInstruction: string
+      if (hasFixed && !trimmedPrompt && trimmedStyle) {
+        // Rule 3: C has images, A empty, B has style -> re-style existing panels and complete missing ones in that style
+        styleInstruction = `Artistic style and restyling: apply this artistic style (${trimmedStyle}) across all panels. For the existing panels from the guide, keep their composition, characters, scene and framing identical but adapt their visual style to ${trimmedStyle}. For the missing panels, draw them to complete the story in this exact style.`
+      } else if (trimmedStyle) {
+        // Explicit style provided
+        styleInstruction = `Artistic style: follow this style strictly across all panels: ${trimmedStyle}.`
+      } else {
+        // Rule 4: B empty -> follow and maintain consistent style from C (panels) and reference files
+        styleInstruction = 'Artistic style: extract and strictly follow the artistic style, rendering, color palette, and lighting from the included panels and reference images, keeping it consistent across all panels.'
+      }
+      const finalPrompt = [trimmedPrompt, styleInstruction].filter(Boolean).join('\n\n')
       return api.generate({
-        provider, prompt: p.prompt, model: chosenModel, aspectRatio: plan.boardAspect, layout: plan.genLayout,
+        provider, prompt: finalPrompt, model: chosenModel, aspectRatio: plan.boardAspect, layout: plan.genLayout,
         resolution, outputFormat, seed: seed.trim(), files: p.files, apiKey: p.apiKey.trim(), fixedPanels, guide,
       })
     }, 'Generating…', async (blob, info, id) => {
+      // Record raw generation output as received from the model
+      void recordAction(
+        `Raw Model Output (${snapshot.plan.genLayout})`,
+        `Received raw answer image from ${chosenModel} (${formatBytes(blob.size)}) in ${info.elapsed.toFixed(1)}s.`,
+        blob,
+        info.elapsed * 1000
+      )
       const layout = await composeBoard(blob, snapshot.plan, snapshot.cells, snapshot.frame)
       const composed = await renderBoard(layout, layout.sources, snapshot.format, snapshot.frame)
       debugSave(id, [{ name: 'board.png', blob: composed }], {
@@ -417,6 +490,12 @@ export default function GenerateArticle(p: Props) {
       p.setPanels(nextCells)
       showBoard(boardFrom(composed, info.filename, { ...layout, frame: snapshot.frame, cost: info.cost, seed: info.seed }),
         emptyHistory(layout.rects.length))
+      void recordAction(
+        `Generated Storyboard (${snapshot.plan.genLayout})`,
+        `Model: ${chosenModel} (${provider}) • Aspect: ${snapshot.plan.boardAspect} • ${info.elapsed.toFixed(1)}s${trimmedPrompt ? ` • Prompt: "${trimmedPrompt.slice(0, 80)}${trimmedPrompt.length > 80 ? '…' : ''}"` : ''}${trimmedStyle ? ` • Style: "${trimmedStyle}"` : ''}`,
+        composed,
+        info.elapsed * 1000
+      )
       setTab('board')
     })
   }
@@ -493,6 +572,13 @@ export default function GenerateArticle(p: Props) {
       })
       const panelAfter = await renderPanel(next.sources[index], next.rects[index].w, next.rects[index].h)
       setEditing({ index, panel: panelAfter })
+      storyboardModifiedRef.current = true
+      void recordAction(
+        `Retouched Panel ${index + 1}`,
+        `Instruction: "${edit.instruction || 'Retouch'}" • Color: ${edit.color} • ${info.elapsed.toFixed(1)}s`,
+        panelAfter,
+        info.elapsed * 1000
+      )
       debugSave(id, [
         { name: 'mask.png', blob: await canvasToBlob(edit.mask, 'png') },
         { name: 'panel-sent.jpg', blob: edit.panel },
@@ -539,6 +625,7 @@ export default function GenerateArticle(p: Props) {
   const plain = useMemo(() => (board ? restyleGeometry(board, PLAIN_FRAME) : null), [board?.layout, board?.rects[0]?.w, board?.rects[0]?.h])
   useEffect(() => {
     if (!boardStyle || sameFrame(boardStyle, frame)) return
+    frameModifiedRef.current = true
     const timer = window.setTimeout(() => {
       void queue(async () => {
         const base = latestBoard.current
@@ -597,12 +684,25 @@ export default function GenerateArticle(p: Props) {
     }
   }
 
+  async function downloadTimelinePdf() {
+    try {
+      setStatus({ kind: 'info', text: 'Generating creation story PDF…' })
+      const pdfBlob = await generateTimelinePdf()
+      saveBlob(pdfBlob, 'storygapboard_creation_story.pdf')
+      void recordAction('Downloaded Creation Story PDF', 'User exported the creation history PDF.')
+      setStatus(null)
+    } catch (e) {
+      setStatus({ kind: 'error', text: (e as Error).message })
+    }
+  }
+
   async function exportProject() {
     if (!board) return
     try {
       setStatus({ kind: 'info', text: 'Preparing project export…' })
       const state: ProjectState = {
         prompt: p.prompt,
+        style: p.style,
         provider: p.prefs.provider,
         model: p.prefs.provider === 'openai' ? p.prefs.openaiModel : p.prefs.model,
         layout,
@@ -658,11 +758,16 @@ export default function GenerateArticle(p: Props) {
       <form onSubmit={onSubmit} noValidate className={`tab-pane${active === 'generate' ? '' : ' is-off'}`} id="tab-generate" role="tabpanel" aria-hidden={active !== 'generate'}>
       <div className="fields">
         <div className="field">
-          <label htmlFor="prompt">Prompt (optional)</label>
+          <label htmlFor="prompt">What do you want?</label>
           <textarea id="prompt" rows={5} value={p.prompt} maxLength={maxChars} disabled={running}
-            placeholder="Optional: describe the story or add details… e.g. a red panda astronaut repairs her ship and flies home at sunrise. Leave it empty and the model completes the story from your panels."
+            placeholder="Describe the story or add details… e.g. a red panda astronaut repairs her ship and flies home at sunrise. Leave it empty and the model completes the story from your panels."
             onChange={(e) => p.setPrompt(e.target.value)} />
           <div className="hint align-right">{p.prompt.length}/{maxChars}</div>
+          <label htmlFor="storyboard_style">Which style do you prefer?</label>
+          <textarea id="storyboard_style" rows={1} value={p.style} maxLength={100} disabled={running}
+            placeholder="Trompe-l'œil... Baroque... Illusionism..."
+            onChange={(e) => p.setStyle(e.target.value)} />
+          <div className="hint align-right">{p.style.length}/100</div>
         </div>
       </div>
 
@@ -838,6 +943,7 @@ export default function GenerateArticle(p: Props) {
                 nextCells[index] = null
                 latestPanels.current = nextCells
                 p.setPanels(nextCells)
+                storyboardModifiedRef.current = true
                 const geometry = geometryFor(base, sources)
                 showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
                   { ...base, ...geometry, sources }), withoutPanel(latestHistory.current, index))
@@ -853,6 +959,7 @@ export default function GenerateArticle(p: Props) {
                 if (!source || !source.empty || source.removed) return
                 const sources = [...base.sources]
                 sources[index] = { ...source, removed: true }
+                storyboardModifiedRef.current = true
                 const geometry = geometryFor(base, sources)
                 showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, base.frame), base.filename,
                   { ...base, ...geometry, sources }))
@@ -913,8 +1020,17 @@ export default function GenerateArticle(p: Props) {
             <label>Preview</label>
             <ul className="actions fixed">
               <li>
-                <button type="button" className="icon-only icon solid fa-eye" aria-label="Open full size" title="Open full size"
+                <button type="button" className="primary icon-only icon solid fa-eye" aria-label="Open full size" title="Open full size"
                   onClick={() => setFullView(true)} />
+              </li>
+            </ul>
+          </div>
+          <div className="download-section">
+            <label>Timeline</label>
+            <ul className="actions fixed">
+              <li>
+                <button type="button" className="primary icon solid fa-file-pdf" aria-label="Download creation story (PDF)" title="Download creation story (PDF)"
+                  onClick={() => void downloadTimelinePdf()}>Timeline</button>
               </li>
             </ul>
           </div>

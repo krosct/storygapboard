@@ -123,6 +123,7 @@ export interface SGBProject {
   version: number
   // Metadados da geração
   prompt: string
+  style?: string
   provider: 'openrouter' | 'openai'
   model: string
   layout: string
@@ -329,6 +330,7 @@ export function deserializeReferenceFile(sgb: SGBReferenceFile): File {
 /** Estado completo necessário para serialização. */
 export interface ProjectState {
   prompt: string
+  style?: string
   provider: 'openrouter' | 'openai'
   model: string
   layout: string
@@ -387,6 +389,7 @@ export async function serializeProject(state: ProjectState): Promise<SGBProject>
   return {
     version: SGB_VERSION,
     prompt: state.prompt,
+    style: state.style ?? '',
     provider: state.provider,
     model: state.model,
     layout: state.layout,
@@ -406,6 +409,7 @@ export async function serializeProject(state: ProjectState): Promise<SGBProject>
 /** Desserializa SGBProject → estado para restaurar. */
 export function deserializeProject(sgb: SGBProject): {
   prompt: string
+  style: string
   provider: 'openrouter' | 'openai'
   model: string
   layout: string
@@ -467,6 +471,7 @@ export function deserializeProject(sgb: SGBProject): {
 
   return {
     prompt: sgb.prompt,
+    style: sgb.style ?? '',
     provider: sgb.provider,
     model: sgb.model,
     layout: sgb.layout,

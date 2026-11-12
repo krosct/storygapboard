@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { ACCEPTED_FILES, fileKind, formatBytes, type Meta } from '../api'
 import { Message, type Notify } from '../components/Toasts'
 import { readSGBFile, type SGBProject } from '../project'
+import { recordAction } from '../timeline'
 
 interface Props {
   meta: Meta | null
@@ -60,6 +61,12 @@ export default function FilesArticle({ meta, files, setFiles, notify, onImportPr
         issues.push(`${file.name} was skipped: at most ${maxFiles} files.`)
       } else {
         next.push(file)
+        const role = kind === 'image' ? 'reference image' : 'context document'
+        void recordAction(
+          `Imported ${file.name}`,
+          `Added ${role} (${formatBytes(file.size)}).`,
+          kind === 'image' ? file : undefined
+        )
       }
     }
     setProblems(issues)

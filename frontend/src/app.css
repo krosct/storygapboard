@@ -247,7 +247,7 @@ ul.actions { flex-wrap: wrap; row-gap: 0.75rem; }
 /* small panels (e.g. 1:8, or a narrow phone): just the "+", the button keeps its aria-label */
 .panel-cell.is-compact .panel-add-text { display: none; }
 .panel-cell.is-compact .panel-number { top: 0.05rem; left: 0.2rem; }
-.panel-cell.is-compact .panel-remove { width: 1rem; height: 1rem; line-height: 0.95rem; font-size: 0.8rem; top: 0.05rem; right: 0.05rem; }
+.panel-cell.is-compact .panel-remove { width: 1.1rem; height: 1.1rem; font-size: 0.55rem; top: 0.05rem; right: 0.05rem; }
 .panel-cell { container-type: inline-size; }
 @container (max-width: 3.3rem) {
   .panel-add-text { display: none; }
@@ -258,16 +258,20 @@ ul.actions { flex-wrap: wrap; row-gap: 0.75rem; }
   top: 0.15rem;
   right: 0.15rem;
   z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 1.4rem;
   height: 1.4rem;
-  line-height: 1.3rem;
-  text-align: center;
-  cursor: pointer;
   border-radius: 50%;
+  border-bottom: none;
+  cursor: pointer;
   background: rgba(27, 31, 34, 0.85);
-  font-size: 1rem;
+  color: #ffffff;
+  font-size: 0.65rem;
 }
-.panel-remove:hover, .panel-remove:focus-visible { background: #ff9b94; color: #1b1f22; }
+.panel-remove.icon:before { line-height: 1; }
+.panel-remove:hover, .panel-remove:focus-visible { background: #ffffff; color: #1b1f22; outline: none; }
 [aria-disabled="true"].panel-add, [aria-disabled="true"].panel-remove { cursor: default; opacity: 0.5; }
 
 /* Result board: drag a panel to move its framing; pencil = retouch, arrow = download */
@@ -355,9 +359,8 @@ html.is-panning, html.is-panning * { user-select: none !important; -webkit-user-
 .board-btn:hover, .board-btn:focus-visible { background: #ffffff; color: #1b1f22; outline: none; }
 .board-btn[aria-disabled="true"] { opacity: 0.4; cursor: default; }
 .board-btn.icon:before { line-height: 1; }
-/* hide a panel: the same red X as the restore button, in the panel's action row */
-.board-hide { color: #ff6b6b !important; }
-.board-hide:hover, .board-hide:focus-visible { background: rgba(255, 107, 107, 0.18); color: #ff6b6b !important; }
+/* hide a panel: same round button style as retouch */
+.board-hide { color: #ffffff; }
 
 /* Panel retouch editor (in a modal) */
 .editor-tools {

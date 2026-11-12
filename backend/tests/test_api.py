@@ -20,6 +20,20 @@ from .helpers import API_KEY, ApiTestCase, FakeOpenRouter, tiny_png
 class MetaTests(ApiTestCase, unittest.TestCase):
     def test_health_and_meta(self):
         self.assertEqual(self.client.get("/api/health").json(), {"ok": True})
+        # Log action test
+        res_action = self.client.post(
+            "/api/actions",
+            json={"action": "test_action", "details": "testing 123", "session_id": "sess-1"},
+        )
+        self.assertEqual(res_action.status_code, 200)
+        self.assertEqual(res_action.json(), {"ok": True})
+        action_log_path = self.data_dir / audit.ACTION_LOG_FILENAME
+        self.assertTrue(action_log_path.exists())
+        row = list(csv.DictReader(action_log_path.read_text().splitlines()))[-1]
+        self.assertEqual(row["action"], "test_action")
+        self.assertEqual(row["details"], "testing 123")
+        self.assertEqual(row["session_id"], "sess-1")
+
         meta = self.client.get("/api/meta").json()
         self.assertEqual(meta["limits"]["max_files"], 5)
         self.assertEqual(meta["limits"]["max_file_bytes"], 5 * 1024 * 1024)

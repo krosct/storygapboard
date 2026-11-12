@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { ACCEPTED_FILES, fileKind, formatBytes, type Meta } from '../api'
 import { Message, type Notify } from '../components/Toasts'
+import { readSGBFile, type SGBProject } from '../project'
 
 interface Props {
   meta: Meta | null
   files: File[]
   setFiles: (files: File[]) => void
   notify: Notify
+  /** Called when a .sgb project file is dropped/selected. */
+  onImportProject?: ((project: SGBProject) => void) | null
 }
 
-export default function FilesArticle({ meta, files, setFiles, notify }: Props) {
+export default function FilesArticle({ meta, files, setFiles, notify, onImportProject }: Props) {
   const maxFiles = meta?.limits.max_files ?? 5
   const maxBytes = meta?.limits.max_file_bytes ?? 5 * 1024 * 1024
   const input = useRef<HTMLInputElement>(null)
@@ -25,8 +28,28 @@ export default function FilesArticle({ meta, files, setFiles, notify }: Props) {
     const next = [...files]
     const issues: string[] = []
     for (const file of incoming) {
-      if (!fileKind(file)) {
-        issues.push(`${file.name}: only PNG, JPEG, WebP, GIF, .txt and .md files are accepted.`)
+      const kind = fileKind(file)
+      if (kind === 'project') {
+        // .sgb project file: only allow if it's the first/only file being added and no other files exist
+        if (files.length > 0 || next.length > 0) {
+          issues.push('Import a project first, before adding reference files.')
+          continue
+        }
+        if (incoming.length > 1) {
+          issues.push('Select only the .sgb file to import a project.')
+          continue
+        }
+        // Defer to the import handler
+        void readSGBFile(file).then((project) => {
+          onImportProject?.(project)
+        }).catch((e) => {
+          issues.push(e.message)
+          setProblems(issues)
+        })
+        return // don't add to the file list
+      }
+      if (!kind) {
+        issues.push(`${file.name}: only PNG, JPEG, WebP, GIF, .txt, .md and .sgb files are accepted.`)
       } else if (file.size > maxBytes) {
         issues.push(`${file.name} is larger than ${formatBytes(maxBytes)}.`)
       } else if (file.size === 0) {
@@ -57,6 +80,8 @@ export default function FilesArticle({ meta, files, setFiles, notify }: Props) {
       <p>Add up to <strong>{maxFiles} files</strong> (max {formatBytes(maxBytes)} each) to steer the result.
         <strong> Text</strong> files (.txt, .md) are added to the prompt as context; <strong>images</strong> (PNG,
         JPEG, WebP, GIF) are sent as visual references to keep a style or a character.</p>
+      <p className="hint">To <strong>import a project</strong>, drop a <code>.sgb</code> file alone (it does not count toward the limit).
+        A project file restores the prompt, layout, panels, retouches, frame style and reference files exactly as saved.</p>
       <p className="hint model-note">Some models accept only text: they ignore reference images. To use images too,
         pick a model that accepts both text and image input in <a href="#model">Model</a>.</p>
 

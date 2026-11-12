@@ -5,12 +5,22 @@
 
 import { drawFrame, frameGeometry, type FrameGeometry, type FrameStyle } from './frame'
 
+export { frameGeometry, type FrameGeometry }
+
 export interface Rect { x: number; y: number; w: number; h: number }
 
-/** A visitor's own panel: the image and its framing (0..1 like CSS object-position, 0.5 = centered). */
-export interface FixedPanel { file: File; x: number; y: number }
+/** A panel in the Fill tab: either the visitor's own file or a generated blob, with framing. */
+export interface Panel {
+  /** Source image: File (user upload) or Blob (generated) */
+  src: File | Blob
+  /** Framing (0..1 like CSS object-position, 0.5 = centered) */
+  x: number
+  y: number
+  /** Whether this is a user-fixed panel (can be removed) vs generated (can be swapped) */
+  fixed: boolean
+}
 
-export type Panels = (FixedPanel | null)[]
+export type Panels = (Panel | null)[]
 
 const GUIDE_LONG_SIDE = 1024
 // two grays in a checkerboard: neighbor placeholders stay apart without borders
@@ -127,8 +137,8 @@ function drawCover(ctx: CanvasRenderingContext2D, img: Drawable, dst: Rect,
   ctx.drawImage(img, src.x + (src.w - sw) * fx, src.y + (src.h - sh) * fy, sw, sh, dst.x, dst.y, dst.w, dst.h)
 }
 
-async function drawFixed(ctx: CanvasRenderingContext2D, panel: FixedPanel, dst: Rect) {
-  const img = await loadImage(panel.file)
+async function drawPanel(ctx: CanvasRenderingContext2D, panel: Panel, dst: Rect) {
+  const img = await loadImage(panel.src)
   drawCover(ctx, img, dst, undefined, panel.x, panel.y)
   img.close()
 }
@@ -139,7 +149,16 @@ async function drawFixed(ctx: CanvasRenderingContext2D, panel: FixedPanel, dst: 
  * object-position. Keeping it (not just the composed board) lets the visitor
  * move the framing later, also after a retouch.
  */
-export interface PanelSource { image: Blob; rect: Rect; x: number; y: number }
+export interface PanelSource {
+  image: Blob
+  rect: Rect
+  x: number
+  y: number
+  /** The visitor removed this panel in the Fill tab: the board leaves the slot empty (transparent). */
+  empty?: boolean
+  /** The visitor removed the slot itself: nothing is drawn there (the board background shows through). */
+  removed?: boolean
+}
 
 // Decoded images, kept while their blob lives (every board version reuses them).
 const bitmaps = new WeakMap<Blob, Promise<ImageBitmap>>()
@@ -177,15 +196,24 @@ function visibleWindow(source: PanelSource, w: number, h: number): Rect {
 export type BoardGeometry = FrameGeometry
 
 /** The same board with another frame style (panel size and layout stay). */
-export function restyleGeometry(g: BoardGeometry, style: FrameStyle): BoardGeometry {
+export function restyleGeometry(g: BoardGeometry, style: FrameStyle, visible?: (i: number) => boolean): BoardGeometry {
   const [rows, cols] = parseLayout(g.layout)
-  return frameGeometry(g.layout, rows, cols, g.rects[0].w, g.rects[0].h, style)
+  return frameGeometry(g.layout, rows, cols, g.rects[0].w, g.rects[0].h, style, visible)
 }
 
 const MIME: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' }
 
+function parseFormat(format: string): { mime: string; quality: number } {
+  if (format.startsWith('jpeg:')) {
+    const q = parseFloat(format.slice(5))
+    return { mime: 'image/jpeg', quality: isNaN(q) ? 0.92 : q }
+  }
+  return { mime: MIME[format] ?? 'image/png', quality: 0.92 }
+}
+
 export function canvasToBlob(el: HTMLCanvasElement, format: string): Promise<Blob> {
-  if (format === 'jpeg') {
+  const { mime, quality } = parseFormat(format)
+  if (mime === 'image/jpeg') {
     // JPEG has no transparency (it would turn black): flatten onto white first
     const flat = document.createElement('canvas')
     flat.width = el.width
@@ -200,13 +228,41 @@ export function canvasToBlob(el: HTMLCanvasElement, format: string): Promise<Blo
   }
   return new Promise((resolve, reject) => {
     el.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not encode the image.'))),
-      MIME[format] ?? 'image/png', 0.92)
+      mime, quality)
   })
 }
 
 /** Extension matching what the browser really encoded (Safari may fall back to PNG). */
 export function blobExt(blob: Blob): string {
   return blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png'
+}
+
+/**
+ * Compress an image blob to a smaller size for fast upload.
+ * Resizes to max 1024px on the long side, encodes as JPEG at the given quality.
+ * This is fast (canvas-based) and effective for context images.
+ */
+export async function compressImage(blob: Blob, maxSide = 1024, quality = 0.7): Promise<Blob> {
+  const img = await createImageBitmap(blob)
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height))
+  const w = Math.round(img.width * scale)
+  const h = Math.round(img.height * scale)
+  img.close()
+  const [el, ctx] = canvas(w, h)
+  ctx.drawImage(await createImageBitmap(blob), 0, 0, w, h)
+  return canvasToBlob(el, `jpeg:${quality}`)
+}
+
+/**
+ * Crop a panel region from a storyboard blob.
+ * Returns a new blob containing just that panel.
+ */
+export async function cropPanel(storyboard: Blob, rect: Rect): Promise<Blob> {
+  const img = await createImageBitmap(storyboard)
+  const [el, ctx] = canvas(rect.w, rect.h)
+  ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h)
+  img.close()
+  return canvasToBlob(el, 'png')
 }
 
 /** The grid sent as the first reference (in the model's grid): fixed panels in place, numbered gray placeholders. */
@@ -222,7 +278,7 @@ export async function composeGuide(plan: Plan, panels: Panels): Promise<Blob> {
     const rect = cellRect(i, layout, width, height)
     const panel = panels[i]
     if (panel) {
-      await drawFixed(ctx, panel, rect)
+      await drawPanel(ctx, panel, rect)
     } else {
       ctx.fillStyle = PLACEHOLDERS[(Math.floor(i / cols) + (i % cols)) % 2]
       ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
@@ -344,8 +400,8 @@ export async function composeBoard(generated: Blob, plan: Plan,
   const sources = await Promise.all(Array.from({ length: total }, async (_, i): Promise<PanelSource> => {
     const panel = panels[i]
     if (!panel) return { image: generated, rect: cells[i], x: 0.5, y: 0.5 }
-    const own = await bitmapOf(panel.file)
-    return { image: panel.file, rect: { x: 0, y: 0, w: own.width, h: own.height }, x: panel.x, y: panel.y }
+    const own = await bitmapOf(panel.src)
+    return { image: panel.src, rect: { x: 0, y: 0, w: own.width, h: own.height }, x: panel.x, y: panel.y }
   }))
   const [rows, cols] = parseLayout(plan.layout)
   return { ...frameGeometry(plan.layout, rows, cols, panelW, panelH, style), sources }
@@ -355,8 +411,11 @@ export async function composeBoard(generated: Blob, plan: Plan,
 export async function renderBoard(geometry: BoardGeometry, sources: PanelSource[], format: string,
   style: FrameStyle): Promise<Blob> {
   const [el, ctx] = canvas(geometry.width, geometry.height)
-  const bitmaps = await Promise.all(sources.map((src) => bitmapOf(src.image)))
-  drawFrame(ctx, geometry, style, (i, rect) => drawSource(ctx, bitmaps[i], sources[i], rect))
+  const bitmaps = await Promise.all(sources.map((src) => (src.empty ? null : bitmapOf(src.image))))
+  drawFrame(ctx, geometry, style, (i, rect) => {
+    const bitmap = bitmaps[i]
+    if (bitmap) drawSource(ctx, bitmap, sources[i], rect)
+  }, (i) => sources[i].empty === true, (i) => sources[i].removed === true)
   return canvasToBlob(el, format)
 }
 
@@ -366,7 +425,7 @@ export async function renderBoard(geometry: BoardGeometry, sources: PanelSource[
  */
 export async function previewBoard(el: HTMLCanvasElement, geometry: BoardGeometry, sources: PanelSource[] | null,
   style: FrameStyle, maxWidth: number): Promise<void> {
-  const bitmaps = sources ? await Promise.all(sources.map((src) => bitmapOf(src.image))) : null
+  const bitmaps = sources ? await Promise.all(sources.map((src) => (src.empty ? null : bitmapOf(src.image)))) : null
   const scale = Math.min(1, maxWidth / geometry.width)
   el.width = Math.max(1, Math.round(geometry.width * scale))
   el.height = Math.max(1, Math.round(geometry.height * scale))
@@ -374,7 +433,11 @@ export async function previewBoard(el: HTMLCanvasElement, geometry: BoardGeometr
   if (!ctx) return
   ctx.setTransform(scale, 0, 0, scale, 0, 0)
   drawFrame(ctx, geometry, style, (i, rect) => {
-    if (bitmaps && sources) { drawSource(ctx, bitmaps[i], sources[i], rect); return }
+    if (bitmaps && sources) {
+      const bitmap = bitmaps[i]
+      if (bitmap) drawSource(ctx, bitmap, sources[i], rect)
+      return
+    }
     const g = ctx.createLinearGradient(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h)
     const hue = (i * 47 + 200) % 360
     g.addColorStop(0, `hsl(${hue}, 45%, 62%)`)
@@ -386,12 +449,13 @@ export async function previewBoard(el: HTMLCanvasElement, geometry: BoardGeometr
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(String(i + 1), rect.x + rect.w / 2, rect.y + rect.h / 2)
-  })
+  }, (i) => sources?.[i]?.empty === true, (i) => sources?.[i]?.removed === true)
 }
 
 /** A panel as one source draws it (its own framing), as a canvas of the panel's size. */
 export async function renderPanel(source: PanelSource, w: number, h: number): Promise<HTMLCanvasElement> {
   const [el, ctx] = canvas(w, h)
+  if (source.empty || source.removed) return el   // removed: nothing there
   drawSource(ctx, await bitmapOf(source.image), source, { x: 0, y: 0, w, h })
   return el
 }

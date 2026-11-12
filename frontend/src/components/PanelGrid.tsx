@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { fileKind, formatBytes } from '../api'
 import { parseLayout, parseRatio, type Panel, type Panels } from '../board'
 import type { Notify } from './Toasts'
+import { recordAction } from '../timeline'
 
 interface Props {
   layout: string
@@ -88,6 +89,7 @@ export default function PanelGrid({ layout, panelAspect, panels, setPanels, maxB
   function remove(i: number) {
     update(i, null)
     onRemove?.(i)
+    void recordAction(`Cleared Panel ${i + 1}`, `Removed image from panel slot ${i + 1}.`)
   }
 
   function put(i: number, file: File | undefined) {
@@ -102,6 +104,7 @@ export default function PanelGrid({ layout, panelAspect, panels, setPanels, maxB
       const panel: Panel = { src: file, x: 0.5, y: 0.5, fixed: true }
       update(i, panel)
       onAdd?.(i, panel)
+      void recordAction(`Added image to Panel ${i + 1}`, `Included ${file.name} (${formatBytes(file.size)}) into panel ${i + 1}.`, file)
     }
   }
 
@@ -240,12 +243,10 @@ export default function PanelGrid({ layout, panelAspect, panels, setPanels, maxB
                   onPointerCancel={onDragCancel}
                   onKeyDown={(e) => onPanKey(e, i)} />
                 {!isDragged && (
-                  <span className="panel-remove" role="button" tabIndex={disabled ? -1 : 0}
+                  <span className="panel-remove icon solid fa-times" role="button" tabIndex={disabled ? -1 : 0}
                     aria-label={`Remove the image of panel ${i + 1}`} aria-disabled={disabled}
                     onClick={() => { if (!disabled) remove(i) }}
-                    onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); remove(i) } }}>
-                    ×
-                  </span>
+                    onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); remove(i) } }} />
                 )}
               </>
             )}

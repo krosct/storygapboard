@@ -12,6 +12,7 @@ import type { SGBProject } from './project'
 import { deserializeProject } from './project'
 import type { PanelSource, Rect } from './board'
 import type { FrameStyle } from './frame'
+import { recordAction } from './timeline'
 
 const ARTICLES = ['fill', 'files', 'model', 'about'] as const
 const NAV: { id: (typeof ARTICLES)[number]; label: string }[] = [
@@ -35,6 +36,7 @@ export default function App() {
   const [files, setFiles] = useState<File[]>([])
   const [panels, setPanels] = useState<Panels>([])
   const [prompt, setPrompt] = useState('')
+  const [style, setStyle] = useState('')
   // Restored board/history from project import (for GenerateArticle to pick up)
   const [restoredBoard, setRestoredBoard] = useState<{
     blob: Blob
@@ -53,6 +55,11 @@ export default function App() {
     order: number[]
     redoOrder: number[]
   } | null>(null)
+
+  useEffect(() => {
+    // Record welcome / session start action
+    void recordAction('Welcome to StoryGapBoard', 'User started a new creative session.')
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -92,8 +99,9 @@ export default function App() {
         frame: restored.frame,
       })
 
-      // Restore prompt
+      // Restore prompt and style
       setPrompt(restored.prompt)
+      setStyle(restored.style)
 
       // Restore reference files (Files tab)
       setFiles(restored.referenceFiles)
@@ -117,7 +125,7 @@ export default function App() {
     } catch (e) {
       notify('error', (e as Error).message)
     }
-  }, [notify, updatePrefs, setPrompt, setFiles, setPanels, setRestoredBoard, setRestoredHistory])
+  }, [notify, updatePrefs, setPrompt, setStyle, setFiles, setPanels, setRestoredBoard, setRestoredHistory])
 
   const article = (id: string, title: string | null, children: ReactNode) => (
     <article
@@ -235,6 +243,7 @@ export default function App() {
             <GenerateArticle
               meta={meta} prefs={prefs} updatePrefs={updatePrefs}
               prompt={prompt} setPrompt={setPrompt}
+              style={style} setStyle={setStyle}
               apiKey={apiKey} files={files} setFiles={setFiles} panels={panels} setPanels={setPanels} notify={notify}
               currentView={view.shown}
               restoredBoard={restoredBoard}

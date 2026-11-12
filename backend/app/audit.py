@@ -15,6 +15,8 @@ import threading
 from pathlib import Path
 
 LOG_FILENAME = "generation_log.csv"
+ACTION_LOG_FILENAME = "action_log.csv"
+
 LOG_FIELDS = [
     "date",
     "status",
@@ -39,6 +41,15 @@ LOG_FIELDS = [
     "cost_usd",
     "total_seconds",
     "error",
+]
+
+ACTION_LOG_FIELDS = [
+    "date",
+    "client_id",
+    "session_id",
+    "action",
+    "details",
+    "duration_ms",
 ]
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -83,6 +94,37 @@ class GenerationLog:
             new_file = not self.path.exists() or self.path.stat().st_size == 0
             with self.path.open("a", encoding="utf-8", newline="") as fh:
                 writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
+                if new_file:
+                    writer.writeheader()
+                writer.writerow(entry)
+
+
+class ActionLog:
+    def __init__(self, data_dir: Path) -> None:
+        self.path = Path(data_dir) / ACTION_LOG_FILENAME
+        self._lock = threading.Lock()
+        self._checked = False
+
+    def _rotate_if_outdated(self) -> None:
+        if self._checked or not self.path.exists():
+            self._checked = True
+            return
+        with self.path.open("r", encoding="utf-8", newline="") as fh:
+            header = next(csv.reader(fh), [])
+        if header and header != ACTION_LOG_FIELDS:
+            stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
+            self.path.rename(self.path.with_name(f"{self.path.stem}.{stamp}{self.path.suffix}"))
+        self._checked = True
+
+    def append(self, row: dict) -> None:
+        entry = {name: _safe_cell(row.get(name, "")) for name in ACTION_LOG_FIELDS}
+        entry["date"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._rotate_if_outdated()
+            new_file = not self.path.exists() or self.path.stat().st_size == 0
+            with self.path.open("a", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=ACTION_LOG_FIELDS)
                 if new_file:
                     writer.writeheader()
                 writer.writerow(entry)

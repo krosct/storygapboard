@@ -53,3 +53,6 @@ Thumbs.db
 .bash_history
 .python-version
 .tool-versions
+
+# --- Storyboard project files ---
+*.sgb

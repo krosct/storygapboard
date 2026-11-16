@@ -495,9 +495,7 @@ export function downloadSGB(sgb: SGBProject, filename?: string): void {
   const a = document.createElement('a')
   a.href = url
   a.download = filename || `storygapboard-${new Date().toISOString().slice(0, 19).replace(/[-:]/g, '')}.sgb`
-  document.body.appendChild(a)
   a.click()
-  document.body.removeChild(a)
   URL.revokeObjectURL(url)
 }
 

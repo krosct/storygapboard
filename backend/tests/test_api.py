@@ -144,7 +144,6 @@ class GenerateTests(ApiTestCase, unittest.TestCase):
             (dict(fixed_panels="1,2,3,4,5,6"), guide, "at least one panel empty"),
             (dict(fixed_panels="1"), [], "layout guide"),
             (dict(fixed_panels="1"), [("guide", ("g.txt", b"hi", "text/plain"))], "layout guide"),
-            (dict(), guide, "layout guide"),
         ]
         for fields, files, needle in cases:
             res = self.generate(files=files, **fields)

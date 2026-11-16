@@ -214,8 +214,6 @@ export default function PanelGrid({ layout, panelAspect, panels, setPanels, maxB
   const gridWidth = cols * panelW + (cols - 1) * 0.4
   // too small for the word: just the "+" (the button keeps its aria-label)
   const compact = Math.min(panelW, panelH) < 3.4
-  const fixed = cells.filter((c) => c?.fixed).length
-  const generated = cells.filter((c) => c && !c.fixed).length
   return (
     <div className="panel-grid-block">
       <div className="panel-grid"
@@ -291,11 +289,6 @@ export default function PanelGrid({ layout, panelAspect, panels, setPanels, maxB
         </div>,
         document.body,
       )}
-      <p className="hint">
-        {fixed === 0 && generated === 0
-          ? 'Optional: drop your own images in some panels. They go into the storyboard exactly as shown here and the model draws the empty ones.'
-          : `${fixed} fixed, ${generated} generated of ${total} panels. Drag a panel onto another to swap them; the arrow keys move its framing.`}
-      </p>
     </div>
   )
 }

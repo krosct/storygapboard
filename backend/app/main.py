@@ -250,10 +250,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             req.uploads = await read_uploads(form.getlist("files"))
             guide = form.get("guide")
-            if req.fixed_panels:
+            if req.fixed_panels or guide is not None:
                 req.guide = await read_image(guide, "layout guide")
-            elif guide is not None:
-                raise ValueError("Invalid layout guide.")
         except ValueError as exc:
             raise _error(400, str(exc)) from exc
         finally:

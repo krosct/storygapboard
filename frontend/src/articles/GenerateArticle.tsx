@@ -20,6 +20,7 @@ import FullView from '../components/FullView'
 import WaitButton from '../components/WaitButton'
 import { serializeProject, downloadSGB, type ProjectState } from '../project'
 import { recordAction, generateTimelinePdf } from '../timeline'
+import { focusAndFlashError } from '../flashError'
 
 interface Props {
   meta: Meta | null
@@ -58,6 +59,7 @@ interface Props {
   } | null
   /** Called when the restored board has been applied. */
   onBoardRestored?: () => void
+  onBoardChange?: (hasBoard: boolean) => void
 }
 
 /** One version of the storyboard (the first generation, then one per retouch; moving a framing updates it in place). */
@@ -133,9 +135,9 @@ function useChime(muted: boolean) {
       ctxRef.current = null
     }
   }
-  const play = (kind: 'success' | 'error') => {
+  const play = (kind: 'success' | 'error', force = false) => {
     const ctx = ctxRef.current
-    if (muted || !ctx) return
+    if ((muted && !force) || !ctx) return
     try {
       const notes = kind === 'success' ? [659.25, 880.0] : [220.0, 164.81]
       notes.forEach((freq, i) => {
@@ -164,6 +166,10 @@ export default function GenerateArticle(p: Props) {
   const [status, setStatus] = useState<{ kind: ToastKind; text: string } | null>(null)
   const [seed, setSeed] = useState('')
   const [board, setBoard] = useState<Board | null>(null)
+  const [lastGeneratedStyle, setLastGeneratedStyle] = useState<string | null>(null)
+  useEffect(() => {
+    if (board && lastGeneratedStyle === null) setLastGeneratedStyle(p.style.trim())
+  }, [board, lastGeneratedStyle, p.style])
   const [history, setHistory] = useState<History>(() => emptyHistory(0))
   const [editing, setEditing] = useState<{ index: number; panel: HTMLCanvasElement; from?: DOMRect } | null>(null)
   const [confirmReplace, setConfirmReplace] = useState(false)
@@ -261,7 +267,6 @@ export default function GenerateArticle(p: Props) {
   // the model typed for this provider (empty = the provider's default, picked by the server)
   const chosenModel = (provider === 'openai' ? p.prefs.openaiModel : p.prefs.model).trim()
   const model = chosenModel || providerInfo?.default_model || ''
-  const keyMissing = `Add your ${providerLabel} API key in the Model section first.`
   // development only: simulated images, nothing is sent to a provider
   const fakeModel = p.meta?.fake_model === true
   // Ratio = shape of each panel; the model gets the grid and ratio that suit it best.
@@ -296,9 +301,9 @@ export default function GenerateArticle(p: Props) {
   const boardUrl = board?.url
   useEffect(() => () => { if (boardUrl) URL.revokeObjectURL(boardUrl) }, [boardUrl])
 
-  // Restore board from project import when GenerateArticle mounts
+  // Restore board from project import when GenerateArticle mounts or a new import arrives
   useEffect(() => {
-    if (p.restoredBoard && !board) {
+    if (p.restoredBoard) {
       const { blob, filename, cost, seed, sources, rects, frame } = p.restoredBoard
       const [rows, cols] = parseLayout(p.prefs.layout)
       const panelW = rects[0]?.w ?? 512
@@ -315,15 +320,16 @@ export default function GenerateArticle(p: Props) {
         }),
         p.restoredHistory ?? emptyHistory(rects.length)
       )
-      setTab('board')
+      setTab('generate')
       p.onBoardRestored?.()
     }
-  }, [p.restoredBoard, board])
+  }, [p.restoredBoard])
 
   function showBoard(next: Board, nextHistory: History = latestHistory.current) {
     latestBoard.current = next
     latestHistory.current = nextHistory
     setBoard(next)
+    p.onBoardChange?.(true)
     setHistory(nextHistory)
   }
 
@@ -333,7 +339,7 @@ export default function GenerateArticle(p: Props) {
   function queue(task: () => Promise<void>, report = true): Promise<void> {
     const run = work.current.then(task)
     work.current = run.catch(() => undefined)
-    if (report) run.catch((e: Error) => setStatus({ kind: 'error', text: e.message }))
+    if (report) run.catch((e: Error) => p.notify('error', e.message))
     return run
   }
 
@@ -371,7 +377,8 @@ export default function GenerateArticle(p: Props) {
               ev.result.notes.forEach((note) => p.notify('warning', note))
               chime.play('success')
             } catch (e) {
-              setStatus({ kind: 'error', text: (e as Error).message })
+              setStatus(null)
+              p.notify('error', (e as Error).message)
               chime.play('error')
             } finally {
               setRunning(false)
@@ -382,15 +389,17 @@ export default function GenerateArticle(p: Props) {
           setStatus({ kind: 'warning', text: 'Cancelled.' })
         } else if (ev.status === 'error') {
           setRunning(false)
-          setStatus({ kind: 'error', text: ev.error })
+          setStatus(null)
+          p.notify('error', ev.error)
           chime.play('error')
         }
       })
     } catch (err) {
       setRunning(false)
+      setStatus(null)
       const error = err as ApiError
       const wait = error.retryAfter ? ` Try again in ${error.retryAfter}s.` : ''
-      setStatus({ kind: 'error', text: error.message + (error.message.includes('Try again') ? '' : wait) })
+      p.notify('error', error.message + (error.message.includes('Try again') ? '' : wait))
     }
   }
 
@@ -409,43 +418,56 @@ export default function GenerateArticle(p: Props) {
     setConfirmReplace(false)
     if (running) return
     if (!p.apiKey.trim() && !fakeModel) {
-      setStatus({ kind: 'error', text: keyMissing })
+      p.notify('error', 'Enter your API key in Model.')
+      focusAndFlashError(['api-key'], '#model')
       return
     }
-    // Only the visitor's own panels (fixed: true) are kept for the next generation.
-    // Panels generated by a previous run are NOT user panels: they must be replaced by
-    // the new answer (keeping them made every panel reuse the old pictures, and the
-    // new cells were then cropped from the wrong place — all showing panel 1).
-    const fixedCells = cells.map((cell) => (cell?.fixed ? cell : null))
+    // Any visible panel in the grid is treated as fixed for the next generation,
+    // regardless of whether it was uploaded by the user or generated previously.
+    const fixedCells = cells
     const fixedPanels = fixedCells.flatMap((cell, i) => (cell ? [i + 1] : []))
     const trimmedPrompt = p.prompt.trim()
     const trimmedStyle = p.style.trim()
     const hasFixed = fixedPanels.length > 0
+    const allFilled = fixedPanels.length === cells.length
+    const styleChanged = lastGeneratedStyle !== null && trimmedStyle !== lastGeneratedStyle && trimmedStyle.length > 0
+    const isRestyle = allFilled && styleChanged
 
     // Validation rules (skipped when using simulated fake model in development):
     // 1. If A (prompt), B (style), and C (panels) are empty -> error
     // 2. If C has at least one image, at least one of A or B must be filled (cannot both be empty)
     if (!fakeModel) {
       if (!trimmedPrompt && !trimmedStyle && !hasFixed) {
-        setStatus({ kind: 'error', text: 'Please provide a story description, an artistic style, or at least one panel.' })
+        p.notify('error', 'Add a story prompt, a style, or at least one panel.')
+        setTab('generate')
+        focusAndFlashError(['prompt', 'storyboard_style', 'panel-grid'], '#fill')
         return
       }
       if (hasFixed && !trimmedPrompt && !trimmedStyle) {
-        setStatus({ kind: 'error', text: 'When panels are provided, please specify a story prompt or an artistic style (or both).' })
+        p.notify('error', 'Add a story prompt or a style for your panels.')
+        setTab('generate')
+        focusAndFlashError(['prompt', 'storyboard_style'], '#fill')
         return
       }
     }
 
-    if (fixedPanels.length === cells.length) {
-      setStatus({ kind: 'error', text: 'Leave at least one panel empty for the model to draw.' })
+    if (allFilled && !styleChanged) {
+      p.notify('error', 'Remove a panel or change the style to continue.')
+      setTab('generate')
+      focusAndFlashError(['panel-grid', 'storyboard_style'], '#fill')
       return
     }
-    const snapshot = { plan, cells: fixedCells, format: outputFormat, frame }
+    const snapshot = { plan, cells: fixedCells, format: outputFormat, frame, isRestyle }
     setEditing(null)
     await runJob(async () => {
-      const guide = fixedPanels.length ? await composeGuide(plan, fixedCells) : null
+      let guide: Blob | null = null
+      if (fixedPanels.length) {
+        guide = await composeGuide(plan, fixedCells)
+      }
       let styleInstruction: string
-      if (hasFixed && !trimmedPrompt && trimmedStyle) {
+      if (isRestyle) {
+        styleInstruction = `Artistic style and restyling: the FIRST reference image is the current storyboard. Keep the exact same story, characters, scenes, composition, camera framing, and panel order in every panel, but redraw the entire storyboard in this artistic style: ${trimmedStyle}.`
+      } else if (hasFixed && !trimmedPrompt && trimmedStyle) {
         // Rule 3: C has images, A empty, B has style -> re-style existing panels and complete missing ones in that style
         styleInstruction = `Artistic style and restyling: apply this artistic style (${trimmedStyle}) across all panels. For the existing panels from the guide, keep their composition, characters, scene and framing identical but adapt their visual style to ${trimmedStyle}. For the missing panels, draw them to complete the story in this exact style.`
       } else if (trimmedStyle) {
@@ -458,7 +480,8 @@ export default function GenerateArticle(p: Props) {
       const finalPrompt = [trimmedPrompt, styleInstruction].filter(Boolean).join('\n\n')
       return api.generate({
         provider, prompt: finalPrompt, model: chosenModel, aspectRatio: plan.boardAspect, layout: plan.genLayout,
-        resolution, outputFormat, seed: seed.trim(), files: p.files, apiKey: p.apiKey.trim(), fixedPanels, guide,
+        resolution, outputFormat, seed: seed.trim(), files: p.files, apiKey: p.apiKey.trim(),
+        fixedPanels: isRestyle ? [] : fixedPanels, guide,
       })
     }, 'Generating…', async (blob, info, id) => {
       // Record raw generation output as received from the model
@@ -468,26 +491,28 @@ export default function GenerateArticle(p: Props) {
         blob,
         info.elapsed * 1000
       )
-      const layout = await composeBoard(blob, snapshot.plan, snapshot.cells, snapshot.frame)
+      const boardCells = snapshot.isRestyle ? snapshot.cells.map(() => null) : snapshot.cells
+      const layout = await composeBoard(blob, snapshot.plan, boardCells, snapshot.frame)
       const composed = await renderBoard(layout, layout.sources, snapshot.format, snapshot.frame)
       debugSave(id, [{ name: 'board.png', blob: composed }], {
         plan: snapshot.plan, board: { width: layout.width, height: layout.height }, rects: layout.rects,
         // where each panel was taken from (generated ones: the cell cut from the model's answer)
         sources: layout.sources.map((src, i) => ({ panel: i + 1, own: snapshot.cells[i]?.fixed ?? false, rect: src.rect })),
       })
-      // Populate cells with generated panels (non-fixed) so they appear in Fill tab
+      // Populate cells with generated panels so they appear in Fill tab (all visible panels are fixed)
       // For generated panels, crop each panel from the model's answer blob
       const nextCells = await Promise.all(layout.sources.map(async (src, i) => {
         const existing = snapshot.cells[i]
-        if (existing?.fixed) {
-          // Keep user-fixed panel with its framing
-          return { src: existing.src, x: existing.x, y: existing.y, fixed: true } as Panel
+        if (existing && !snapshot.isRestyle) {
+          // Keep existing visible panel with its framing
+          return { src: existing.src, x: existing.x, y: existing.y, fixed: existing.fixed } as Panel
         }
         // Generated panel: crop this panel's region from the model's answer
         const panelBlob = await cropPanel(blob, src.rect)
         return { src: panelBlob, x: 0.5, y: 0.5, fixed: false } as Panel
       }))
       p.setPanels(nextCells)
+      setLastGeneratedStyle(trimmedStyle)
       showBoard(boardFrom(composed, info.filename, { ...layout, frame: snapshot.frame, cost: info.cost, seed: info.seed }),
         emptyHistory(layout.rects.length))
       void recordAction(
@@ -506,7 +531,7 @@ export default function GenerateArticle(p: Props) {
       setEditing({ index, panel: await renderPanel(board.sources[index], board.rects[index].w, board.rects[index].h), from })
       setStatus(null)   // the window shows its own progress; the last run's message does not apply
     } catch (e) {
-      setStatus({ kind: 'error', text: (e as Error).message })
+      p.notify('error', (e as Error).message)
     }
   }
 
@@ -536,7 +561,8 @@ export default function GenerateArticle(p: Props) {
   async function onEdit(edit: PanelEdit) {
     if (!board || !editing || running) return
     if (!p.apiKey.trim() && !fakeModel) {
-      setStatus({ kind: 'error', text: keyMissing })
+      p.notify('error', 'Enter your API key in Model.')
+      focusAndFlashError(['api-key'], '#model')
       return
     }
     const { index } = editing
@@ -640,6 +666,43 @@ export default function GenerateArticle(p: Props) {
     return () => window.clearTimeout(timer)
   }, [frame, boardStyle])
 
+  // Changing layout or panel ratio updates the existing board across Storyboard and Frame tabs too.
+  useEffect(() => {
+    const base = latestBoard.current
+    if (!base) return
+    const [curW, curH] = [base.rects[0]?.w ?? 512, base.rects[0]?.h ?? 512]
+    const [rw, rh] = aspectRatio === 'auto'
+      ? [curW, curH]
+      : aspectRatio.split(':').map(Number)
+    const ratio = rw > 0 && rh > 0 ? rw / rh : curW / curH
+    const area = curW * curH
+    const nextW = Math.max(64, Math.round(Math.sqrt(area * ratio)))
+    const nextH = Math.max(64, Math.round(nextW / ratio))
+    if (base.layout === layout && Math.abs(curW - nextW) <= 2 && Math.abs(curH - nextH) <= 2) return
+
+    void queue(async () => {
+      const latest = latestBoard.current
+      if (!latest) return
+      const [rows, cols] = parseLayout(layout)
+      const count = rows * cols
+      const sources: PanelSource[] = Array.from({ length: count }, (_, i) =>
+        latest.sources[i] ?? {
+          image: new Blob(),
+          rect: { x: 0, y: 0, w: nextW, h: nextH },
+          x: 0.5,
+          y: 0.5,
+          empty: true,
+          removed: false,
+        },
+      )
+      const mode = latest.frame.adjust.emptyMode
+      const visible = mode === 'kept' ? undefined : (i: number) => !sources[i]?.empty && !sources[i]?.removed
+      const geometry = frameGeometry(layout, rows, cols, nextW, nextH, latest.frame, visible)
+      showBoard(boardFrom(await renderBoard(geometry, sources, outputFormat, latest.frame), latest.filename,
+        { ...latest, ...geometry, sources }))
+    })
+  }, [layout, aspectRatio])
+
   // Moving a framing redraws the current board in place (no model call, not a retouch).
   // Also syncs the framing to the Fill tab's cells.
   function onFrame(index: number, x: number, y: number) {
@@ -680,7 +743,7 @@ export default function GenerateArticle(p: Props) {
       const blob = await canvasToBlob(await renderPanel(board.sources[index], board.rects[index].w, board.rects[index].h), outputFormat)
       saveBlob(blob, `${board.filename.replace(/\.[a-z]+$/, '')}_panel-${index + 1}.${blobExt(blob)}`)
     } catch (e) {
-      setStatus({ kind: 'error', text: (e as Error).message })
+      p.notify('error', (e as Error).message)
     }
   }
 
@@ -692,14 +755,14 @@ export default function GenerateArticle(p: Props) {
       void recordAction('Downloaded Creation Story PDF', 'User exported the creation history PDF.')
       setStatus(null)
     } catch (e) {
-      setStatus({ kind: 'error', text: (e as Error).message })
+      setStatus(null)
+      p.notify('error', (e as Error).message)
     }
   }
 
   async function exportProject() {
     if (!board) return
     try {
-      setStatus({ kind: 'info', text: 'Preparing project export…' })
       const state: ProjectState = {
         prompt: p.prompt,
         style: p.style,
@@ -728,9 +791,8 @@ export default function GenerateArticle(p: Props) {
       }
       const sgb = await serializeProject(state)
       downloadSGB(sgb)
-      setStatus({ kind: 'success', text: 'Project exported.' })
     } catch (e) {
-      setStatus({ kind: 'error', text: (e as Error).message })
+      p.notify('error', (e as Error).message)
     }
   }
 
@@ -740,7 +802,8 @@ export default function GenerateArticle(p: Props) {
     try {
       await api.cancel(jobId.current)
     } catch (e) {
-      setStatus({ kind: 'error', text: (e as Error).message })
+      setStatus(null)
+      p.notify('error', (e as Error).message)
     }
   }
 
@@ -812,6 +875,7 @@ export default function GenerateArticle(p: Props) {
         depending on the model, some may be adjusted (e.g. to the closest supported ratio) or ignored.</p>
 
       <label>Panels</label>
+      <div id="panel-grid">
       <PanelGrid layout={layout} panelAspect={aspectRatio} panels={cells} setPanels={p.setPanels}
         maxBytes={maxBytes} disabled={running} notify={p.notify}
         onFrame={(index, x, y) => {
@@ -870,6 +934,7 @@ export default function GenerateArticle(p: Props) {
               { ...base, ...geometry, sources }))
           })
         }} />
+      </div>
 
       <div className="summary-line">
         <span className="ratio-label" title="Panel shape preview"><RatioPreview ratio={aspectRatio} />Panels {aspectRatio}</span>
@@ -885,16 +950,45 @@ export default function GenerateArticle(p: Props) {
         )}
       </div>
 
-      <ul className="actions fixed">
-        <li><input type="submit" className="btn-generate" value={running ? 'Working…' : 'Fill'} disabled={running} /></li>
+      {(() => {
+        const allFilled = cells.every((c) => Boolean(c))
+        const styleChanged = lastGeneratedStyle !== null && p.style.trim() !== lastGeneratedStyle && p.style.trim().length > 0
+        const isRestyle = allFilled && styleChanged
+        const canSubmit = !allFilled || isRestyle
+        const label = running ? 'Working…' : (isRestyle ? 'Restyle' : 'Fill')
+        return (
+          <ul className="actions fixed">
+            <li>
+              <span
+                className="btn-generate-wrap"
+                title={!canSubmit ? 'All panels are filled — remove a panel to fill gaps or change the style to restyle.' : undefined}
+              >
+                <button
+                  type="submit"
+                  className="btn-generate"
+                  disabled={running || !canSubmit}
+                >
+                  <span key={label} className="btn-flip-label">{label}</span>
+                </button>
+              </span>
+            </li>
         <li><input type="button" className="btn-cancel" value="Cancel" disabled={!running} onClick={() => void onCancel()} /></li>
         <li>
           <button type="button"
             className={`btn-sound icon-only icon solid ${p.prefs.muted ? 'fa-volume-mute is-off' : 'fa-volume-up is-on'}`}
             aria-label="Sound when a generation ends" title={p.prefs.muted ? 'Sound off' : 'Sound on'}
-            aria-pressed={!p.prefs.muted} onClick={() => p.updatePrefs({ muted: !p.prefs.muted })} />
+            aria-pressed={!p.prefs.muted} onClick={() => {
+              const nextMuted = !p.prefs.muted
+              p.updatePrefs({ muted: nextMuted })
+              if (!nextMuted) {
+                chime.prime()
+                chime.play('success', true)
+              }
+            }} />
         </li>
       </ul>
+        )
+      })()}
 
       <div className="run-strip" aria-live="polite">
         {running && <span className="elapsed">{elapsed.toFixed(1)}s</span>}
@@ -1029,8 +1123,8 @@ export default function GenerateArticle(p: Props) {
             <label>Timeline</label>
             <ul className="actions fixed">
               <li>
-                <button type="button" className="primary icon solid fa-file-pdf" aria-label="Download creation story (PDF)" title="Download creation story (PDF)"
-                  onClick={() => void downloadTimelinePdf()}>Timeline</button>
+                <button type="button" className="primary icon solid fa-file-pdf" aria-label="Download timeline" title="Download timeline"
+                  onClick={() => setPendingDownload({ label: 'creation story (PDF)', run: () => void downloadTimelinePdf() })}>Timeline</button>
               </li>
             </ul>
           </div>
@@ -1053,8 +1147,7 @@ export default function GenerateArticle(p: Props) {
           <ul className="actions fixed">
             <li><button type="button" className="primary icon solid fa-download" title="Download full storyboard" onClick={() => setPendingDownload({ label: 'full storyboard', run: () => saveBlob(board.blob, board.filename) })}>Full</button></li>
             <li><button type="button" className="primary icon solid fa-file-export" aria-label="Export project" title="Export project (.sgb)"
-            // <li><button type="button" className="icon solid fa-file-export" aria-label="Export project" title="Export project (.sgb)"
-              onClick={() => void exportProject()}>Export</button></li>
+              onClick={() => setPendingDownload({ label: 'project (.sgb)', run: () => void exportProject() })}>Export</button></li>
           </ul>
           {pendingDownload && (
             <Modal title={`Download ${pendingDownload.label}`} busy={false} small className="share-modal" onClose={() => setPendingDownload(null)}>

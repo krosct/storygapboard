@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { api, type Meta } from './api'
 import { useDimension } from './useDimension'
 import { ToastRegion, useToasts } from './components/Toasts'
+import Modal from './components/Modal'
 import GenerateArticle from './articles/GenerateArticle'
 import FilesArticle from './articles/FilesArticle'
 import ModelArticle from './articles/ModelArticle'
@@ -37,6 +38,8 @@ export default function App() {
   const [panels, setPanels] = useState<Panels>([])
   const [prompt, setPrompt] = useState('')
   const [style, setStyle] = useState('')
+  const [hasBoard, setHasBoard] = useState(false)
+  const [pendingImport, setPendingImport] = useState<SGBProject | null>(null)
   // Restored board/history from project import (for GenerateArticle to pick up)
   const [restoredBoard, setRestoredBoard] = useState<{
     blob: Blob
@@ -83,7 +86,7 @@ export default function App() {
   }, [])
 
   // Handle project import (.sgb file) - always available regardless of active tab
-  const handleImportProject = useCallback((sgb: SGBProject) => {
+  const applyImportProject = useCallback((sgb: SGBProject) => {
     try {
       notify('info', 'Importing project…')
       const restored = deserializeProject(sgb)
@@ -126,6 +129,14 @@ export default function App() {
       notify('error', (e as Error).message)
     }
   }, [notify, updatePrefs, setPrompt, setStyle, setFiles, setPanels, setRestoredBoard, setRestoredHistory])
+
+  const handleImportProject = useCallback((sgb: SGBProject) => {
+    if (hasBoard || panels.some(Boolean)) {
+      setPendingImport(sgb)
+      return
+    }
+    applyImportProject(sgb)
+  }, [hasBoard, panels, applyImportProject])
 
   const article = (id: string, title: string | null, children: ReactNode) => (
     <article
@@ -249,6 +260,7 @@ export default function App() {
               restoredBoard={restoredBoard}
               restoredHistory={restoredHistory}
               onBoardRestored={() => { setRestoredBoard(null); setRestoredHistory(null) }}
+              onBoardChange={setHasBoard}
             />)}
           {article('files', 'Files',
             <FilesArticle meta={meta} files={files} setFiles={setFiles} notify={notify}
@@ -268,6 +280,15 @@ export default function App() {
       </div>
       <div id="bg"></div>
       <ToastRegion toasts={toasts} dismiss={dismiss} />
+      {pendingImport && (
+        <Modal title="Replace the storyboard?" busy={false} small onClose={() => setPendingImport(null)}>
+          <p>This will replace your current storyboard and panels.</p>
+          <ul className="actions fixed">
+            <li><button type="button" className="primary" onClick={() => { const sgb = pendingImport; setPendingImport(null); applyImportProject(sgb) }}>Replace</button></li>
+            <li><button type="button" onClick={() => setPendingImport(null)}>Cancel</button></li>
+          </ul>
+        </Modal>
+      )}
     </>
   )
 }
